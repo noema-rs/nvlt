@@ -1,0 +1,23 @@
+[package]
+name = "totp"
+version = "0.1.0"
+description = "Standalone TOTP seed store (totp.age)"
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "vault_totp"
+
+[dependencies]
+core = { path = "../core" }
+chrono = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+totp-rs = { workspace = true }
+image = { workspace = true }
+image24 = { package = "image", version = "=0.24.9" }
+qrcode = { workspace = true }
+rqrr = { workspace = true }

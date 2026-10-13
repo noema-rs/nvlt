@@ -1,0 +1,47 @@
+schema: spec-driven
+
+context: |
+  Project: nvlt — desktop secret manager (Rust workspace). README.md overview; INIT.md full doc (English).
+  Crypto: age crate, Argon2id KDF (64MB, t=3, p=4), salt from config lock (HKDF); seeds in local nvlt.enc.
+  Composite key = password || primary TOTP seed; backup key = password || backup TOTP seed.
+  TOTP 6-digit code verifies seed possession only. Sync: host.age/host.pub (nvlt.enc never in git).
+  Workspace crates: core, passwords, envs, files, totp, ssh, cli (binary nvlt). Nix flake dev shell (rustc from nixpkgs unstable).
+  Toolchain: match dev environment (currently Rust 1.98.x, edition 2021 unless flake pins otherwise).
+  Docs: root README.md + INIT.md (English); README.md per crate; /// rustdoc on public API only.
+  Clippy: cargo clippy --workspace -- -D warnings (must pass before tasks complete).
+  Logging (CLI phases): tracing or similar allowed for operational/debug events only; MUST NOT log passwords, seeds, derived keys, TOTP codes, env values, or command output payloads.
+  Naming: standard Rust (snake_case, PascalCase types); crate directory names per INIT (core, passwords, …) without extra vault_ prefix.
+  Commits: Conventional Commits (feat:, fix:, chore:, …) in English.
+  User-facing text: English only (CLI prompts, confirmations, errors shown to users).
+  License: MIT (workspace Cargo.toml + LICENSE file when repo is bootstrapped).
+  CI: none for now; validate locally via cargo test/clippy/fmt and run the vault binary directly.
+  Dependencies: pin exact versions in root Cargo.toml [workspace.dependencies]; member crates reference { workspace = true }.
+  Safety: no unsafe code in project crates — use #![forbid(unsafe_code)] at crate roots.
+  Secrets: secrecy::SecretString, zeroize on drop; vault MUST NOT persist plaintext by itself.
+  CLI philosophy: print to stdout; user owns redirection. Destructive ops require explicit confirmation.
+  Dev shell: flake.nix with openssl for future deps; RUST_BACKTRACE=1.
+
+rules:
+  proposal:
+    - Reference INIT.md sections when scoping; include Non-goals for phased work
+    - Capabilities use kebab-case under vault-* prefix
+  design:
+    - Align module layout with INIT.md workspace diagram
+    - Call out security/memory lifecycle explicitly
+  tasks:
+    - Order: workspace skeleton → core modules → tests → later crates
+    - Checkbox tasks sized for one session (~1–2h each)
+  specs:
+    - Use SHALL/MUST; scenarios with #### and WHEN/THEN
+    - No Rust type names in requirements unless they are user-visible CLI behavior
+
+operations:
+  apply:
+    guidance:
+      - thiserror in library crates; miette + owo-colors only in cli binary
+      - Tests exhaustive on core/crypto (KDF, age round-trip, TOTP, wrong-key failure); lighter elsewhere until subsystem phase
+      - Run cargo fmt, clippy, and tests before marking tasks done
+      - Match existing module naming in INIT.md (crypto, kdf, totp, secrets, vault, error)
+      - Minimize scope per task; no drive-by refactors
+      - Add workspace.dependencies with exact version pins before adding member crate deps
+      - Set workspace.package license = "MIT" on bootstrap

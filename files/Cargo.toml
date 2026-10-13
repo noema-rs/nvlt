@@ -1,0 +1,15 @@
+[package]
+name = "files"
+version = "0.1.0"
+description = "Encrypted arbitrary file store"
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "vault_files"
+
+[dependencies]
+core = { path = "../core" }
+secrecy = { workspace = true }
+thiserror = { workspace = true }

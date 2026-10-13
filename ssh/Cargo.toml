@@ -1,0 +1,18 @@
+[package]
+name = "ssh"
+version = "0.1.0"
+description = "SSH keypair store (ssh.age)"
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "vault_ssh"
+
+[dependencies]
+core = { path = "../core" }
+chrono = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

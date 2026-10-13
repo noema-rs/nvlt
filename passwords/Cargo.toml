@@ -1,0 +1,19 @@
+[package]
+name = "passwords"
+version = "0.1.0"
+description = "Encrypted password vault store (pass.age)"
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "vault_passwords"
+
+[dependencies]
+core = { path = "../core" }
+chrono = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+totp-rs = { workspace = true }
