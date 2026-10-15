@@ -2,16 +2,16 @@
 
 ## Purpose
 
-Emergency destruction of local operational vault material when the user believes the host or local nvlt tree is compromised, with recovery expected from snapshot and offline bundle stored elsewhere.
+Emergency destruction of local operational vault material when the user believes the host or local nvlt tree is compromised, with recovery expected from a git snapshot and the offline backup key stored elsewhere.
 
 ## Requirements
 
 ### Requirement: Panic command
-The CLI SHALL provide `nvlt panic` that removes operational encrypted vault files under the configured vault root, the entire `rate/` directory, legacy `nvlt.enc` if present, and clears the agent session.
+The CLI SHALL provide `nvlt system panic` that removes operational encrypted vault files under the configured vault root (the `.age` files and encrypted stores such as `envs/` and `files/`), legacy `nvlt.enc` if present, and clears the agent session.
 
 #### Scenario: Wipe ciphertext
 - **WHEN** panic completes successfully on an initialized vault
-- **THEN** `pass.age`, `totp.age`, `backup.age`, `ssh.age`, `envs/`, `files/`, and `rate/` are absent under the vault root
+- **THEN** `pass.age`, `totp.age`, `backup.age`, `ssh.age`, `envs/`, and `files/` are absent under the vault root
 
 #### Scenario: Agent cleared
 - **WHEN** panic runs
@@ -32,22 +32,26 @@ When `pass.age` exists, panic SHALL require the vault master password and SHALL 
 - **THEN** panic aborts with no file removal
 
 ### Requirement: Config reset after panic
-After a successful panic, the CLI SHALL remove `lock`, `device_id`, `rate_limit_pub`, and `rate_generation` from vault-local `config.toml` while preserving vault path and KDF settings.
+After a successful panic, the CLI SHALL remove `lock` from vault-local `config.toml` while preserving vault path and KDF settings.
 
 #### Scenario: Status after panic
-- **WHEN** the user runs `nvlt status` after panic
+- **WHEN** the user runs `nvlt system status` after panic
 - **THEN** the vault is reported as not initialized for unlock purposes
 
 ### Requirement: Recovery guidance
-On successful panic, the CLI SHALL print a short message directing the user to restore via git snapshot and `nvlt init --from-snapshot`, and to use offline recovery bundle material stored off the machine.
+On successful panic, the CLI SHALL print a short message directing the user to restore via git snapshot and `nvlt system init --from-snapshot`, and to keep the offline backup key stored off the machine.
 
 #### Scenario: Post-panic message
 - **WHEN** panic succeeds
 - **THEN** the output mentions from-snapshot and does not print secrets
 
 ### Requirement: Panic scope
-Panic SHALL NOT delete snapshot repositories outside the configured vault root or modify offline recovery bundle files the user keeps elsewhere.
+Panic SHALL NOT delete snapshot repositories outside the configured vault root, unlock key files the user keeps elsewhere, or the offline backup key.
 
 #### Scenario: External snapshot safe
 - **WHEN** the user's git snapshot clone lives outside `vault.path`
 - **THEN** panic does not remove those files
+
+#### Scenario: Key files untouched
+- **WHEN** the user stores unlock key files outside the vault root
+- **THEN** panic does not remove them

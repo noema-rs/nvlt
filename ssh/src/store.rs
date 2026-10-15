@@ -67,9 +67,7 @@ impl SshStore {
                 name: entry.name.clone(),
             });
         }
-        self.document
-            .entries
-            .push(entry.into_entry(Utc::now()));
+        self.document.entries.push(entry.into_entry(Utc::now()));
         Ok(())
     }
 

@@ -39,37 +39,21 @@ pub enum PassCmd {
         user: Option<String>,
     },
     /// Show password, TOTP, and fields for one entry
-    Get {
-        domain: String,
-        username: String,
-    },
+    Get { domain: String, username: String },
     /// Interactive add for a domain
-    Add {
-        domain: String,
-    },
+    Add { domain: String },
     /// Interactive edit (confirms overwrite)
-    Edit {
-        domain: String,
-        username: String,
-    },
+    Edit { domain: String, username: String },
     /// Delete one entry (confirms)
-    Remove {
-        domain: String,
-        username: String,
-    },
+    Remove { domain: String, username: String },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum EnvCmd {
     /// List profiles, or keys in one profile
-    List {
-        profile: Option<String>,
-    },
+    List { profile: Option<String> },
     /// Get one variable value
-    Get {
-        profile: String,
-        key: String,
-    },
+    Get { profile: String, key: String },
     /// Set a variable (creates profile if needed)
     Set {
         profile: String,
@@ -77,26 +61,15 @@ pub enum EnvCmd {
         value: String,
     },
     /// Remove one key (confirms)
-    Unset {
-        profile: String,
-        key: String,
-    },
+    Unset { profile: String, key: String },
     /// Create an empty profile
-    Add {
-        profile: String,
-    },
+    Add { profile: String },
     /// Delete a profile (confirms)
-    Remove {
-        profile: String,
-    },
+    Remove { profile: String },
     /// Print export KEY=... lines to stdout
-    Export {
-        profile: String,
-    },
+    Export { profile: String },
     /// Shell wrapper evaluates export output (see INIT.md)
-    Load {
-        profile: String,
-    },
+    Load { profile: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -104,9 +77,7 @@ pub enum FilesCmd {
     /// List encrypted filenames in the vault
     List,
     /// Encrypt a file into files/ (confirms overwrite)
-    Encrypt {
-        path: PathBuf,
-    },
+    Encrypt { path: PathBuf },
     /// Decrypt to path or --stdout (confirms overwrite)
     Decrypt {
         name: String,
@@ -115,9 +86,7 @@ pub enum FilesCmd {
         stdout: bool,
     },
     /// Delete encrypted file (confirms)
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -445,9 +414,9 @@ pub fn run_totp(cmd: TotpCmd) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn run_lifecycle(cmd: LifecycleCmd) -> Result<(), CliError> {
+pub fn run_system(cmd: SystemCmd) -> Result<(), CliError> {
     match cmd {
-        LifecycleCmd::Init {
+        SystemCmd::Init {
             from_snapshot,
             path,
             identity,
@@ -462,39 +431,62 @@ pub fn run_lifecycle(cmd: LifecycleCmd) -> Result<(), CliError> {
                 lifecycle::init(&mut config)
             }
         }
-        LifecycleCmd::Status => {
+        SystemCmd::Status => {
             let config = load_config()?;
             lifecycle::status(&config)
         }
-        LifecycleCmd::Backup => {
+        SystemCmd::Backup => {
             let config = load_config()?;
             lifecycle::backup(&config)
         }
-        LifecycleCmd::Recover => {
+        SystemCmd::Recover => {
             let config = load_config()?;
             lifecycle::recover(&config)
         }
-        LifecycleCmd::Rotate => {
+        SystemCmd::Rotate => {
             let config = load_config()?;
             lifecycle::rotate(&config)
         }
+        SystemCmd::Snapshot { cmd } => run_snapshot(cmd),
+        SystemCmd::Panic => crate::panic::run_panic(),
+        SystemCmd::Config { cmd } => run_config(cmd),
     }
 }
 
 #[derive(Subcommand, Debug)]
-pub enum LifecycleCmd {
+pub enum SystemCmd {
+    /// Create a new vault, or bootstrap from a snapshot (host.age)
     Init {
+        /// Decrypt host.age into the vault, then prompt for the master password and main key
         #[arg(long)]
         from_snapshot: bool,
+        /// Snapshot root (git clone with host.age); required with --from-snapshot
         #[arg(long, value_name = "PATH", requires = "from_snapshot")]
         path: Option<PathBuf>,
+        /// Sync age private key (default: {path}/.nvlt-sync/host.key)
         #[arg(long, value_name = "PATH", requires = "from_snapshot")]
         identity: Option<PathBuf>,
     },
+    /// Show vault path, initialization state, and agent session (Unix)
     Status,
+    /// Refresh backup.age from current vault data (requires the backup key)
     Backup,
+    /// Restore vault data from backup.age and issue a new main unlock key
     Recover,
+    /// Change master password and/or unlock keys; re-encrypt all stores and backup
     Rotate,
+    /// Export or import encrypted host.age snapshots for git sync
+    Snapshot {
+        #[command(subcommand)]
+        cmd: SnapshotCmd,
+    },
+    /// Emergency local wipe of ciphertext; restore via git snapshot and init --from-snapshot
+    Panic,
+    /// Bootstrap path and vault config.toml settings
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -505,7 +497,7 @@ pub enum SnapshotCmd {
         #[arg(long)]
         path: PathBuf,
     },
-    /// Decrypt host.age into vault root; does not touch nvlt.enc (confirms overwrite)
+    /// Decrypt host.age into vault root (confirms overwrite)
     Import {
         #[arg(long)]
         path: PathBuf,
@@ -517,22 +509,6 @@ pub fn run_snapshot(cmd: SnapshotCmd) -> Result<(), CliError> {
     match cmd {
         SnapshotCmd::Export { path } => crate::snapshot::snapshot_export(&config, &path),
         SnapshotCmd::Import { path } => crate::snapshot::snapshot_import(&config, &path),
-    }
-}
-
-#[derive(Subcommand, Debug)]
-pub enum RevealCmd {
-    /// Master password + primary TOTP code → seed on stdout
-    Primary,
-    /// Master password + backup TOTP code → seed on stdout
-    Backup,
-}
-
-pub fn run_reveal(cmd: RevealCmd) -> Result<(), CliError> {
-    let config = load_config()?;
-    match cmd {
-        RevealCmd::Primary => crate::reveal::run_reveal(&config, crate::reveal::RevealRole::Primary),
-        RevealCmd::Backup => crate::reveal::run_reveal(&config, crate::reveal::RevealRole::Backup),
     }
 }
 

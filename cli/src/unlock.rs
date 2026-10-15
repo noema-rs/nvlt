@@ -1,16 +1,17 @@
-use secrecy::SecretString;
-use vault_core::{derive_key, verify_totp};
+use secrecy::{ExposeSecret, SecretString};
+use vault_core::derive_key;
 use vault_passwords::PasswordStore;
 
 use crate::agent;
 use crate::config::Config;
 use crate::error::CliError;
+use crate::keys;
 use crate::paths::VaultLayout;
 use rpassword::prompt_password;
-use crate::rate_limit::{self, burn_slot, load_primary_from_slot, rewrap_slot_after_success, select_active_slot};
 
 pub struct UnlockSession {
     pub(crate) password: SecretString,
+    pub(crate) key_secret: SecretString,
     pub data_key: SecretString,
 }
 
@@ -28,6 +29,7 @@ impl UnlockSession {
             if data_key_matches_vault(layout, &data_key) {
                 return Ok(Self {
                     password: SecretString::new(String::new()),
+                    key_secret: SecretString::new(String::new()),
                     data_key,
                 });
             }
@@ -41,55 +43,30 @@ impl UnlockSession {
         if !layout.is_initialized(config) {
             return Err(CliError::NotInitialized);
         }
-        rate_limit::guard_device(config)?;
-        rate_limit::ensure_rate_layout(config, layout)?;
-        let slot = select_active_slot(layout, config)?;
-        let salt = vault_salt(config)?;
-        let params = config.kdf.to_kdf_params();
         let password =
             SecretString::new(prompt_password("Master password: ").map_err(CliError::Io)?);
 
-        let (primary, backup) = match load_primary_from_slot(layout, config, slot, &password, params)
-        {
-            Ok(seeds) => seeds,
-            Err(e) => {
-                let _ = burn_slot(layout, slot);
-                return Err(e);
-            }
-        };
+        let key_path = keys::prompt_key_path("Unlock key file path: ")?;
+        keys::warn_key_custody(layout, &key_path);
+        let key_secret = keys::load_identity_checked(&key_path)?;
 
-        let code = prompt_password("Authenticator code (6 digits): ").map_err(CliError::Io)?;
-        if !verify_totp(&primary, code.trim())? {
-            eprintln!(
-                "Authenticator code did not match. If you re-initialized the vault, \
-                 use the new primary entry from init (not an old app label)."
-            );
-            let _ = burn_slot(layout, slot);
-            return Err(CliError::UnlockCancelled);
-        }
+        let salt = vault_salt(config)?;
+        let params = config.kdf.to_kdf_params();
+        let data_key = derive_key(&password, &key_secret, &salt, params)?;
 
-        let data_key = derive_key(&password, &primary, &salt, params).map_err(|e| {
-            let _ = burn_slot(layout, slot);
-            CliError::from(e)
-        })?;
         if !data_key_matches_vault(layout, &data_key) {
-            eprintln!(
-                "Credentials verified, but encrypted vault files could not be opened.\n\
-                 Check `nvlt config show` paths match files under {}.",
-                layout.root.display()
-            );
-            let _ = burn_slot(layout, slot);
-            return Err(CliError::UnlockCancelled);
+            return Err(CliError::Config(
+                "master password or key file did not open the vault; \
+                 check both, or recover with your backup key"
+                    .into(),
+            ));
         }
 
-        if rewrap_slot_after_success(layout, config, slot, &password, &primary, &backup, params)
-            .is_err()
-        {
-            let _ = burn_slot(layout, slot);
-            return Err(CliError::UnlockCancelled);
-        }
-
-        Ok(Self { password, data_key })
+        Ok(Self {
+            password,
+            key_secret,
+            data_key,
+        })
     }
 
     pub fn derive_backup_key(
@@ -97,25 +74,17 @@ impl UnlockSession {
         config: &Config,
         layout: &VaultLayout,
     ) -> Result<SecretString, CliError> {
-        let salt = vault_salt(config)?;
-        let params = config.kdf.to_kdf_params();
-        let code =
-            prompt_password("Backup authenticator code (6 digits): ").map_err(CliError::Io)?;
         let password = if self.password.expose_secret().is_empty() {
             SecretString::new(prompt_password("Master password: ").map_err(CliError::Io)?)
         } else {
             self.password.clone()
         };
-        rate_limit::guard_device(config)?;
-        rate_limit::ensure_rate_layout(config, layout)?;
-        let slot = select_active_slot(layout, config)?;
-        let (_primary, backup) =
-            load_primary_from_slot(layout, config, slot, &password, params)?;
-        if !verify_totp(&backup, code.trim())? {
-            let _ = burn_slot(layout, slot);
-            return Err(CliError::UnlockCancelled);
-        }
-        derive_key(&password, &backup, &salt, params).map_err(CliError::from)
+        let key_path = keys::prompt_key_path("Backup key file path: ")?;
+        keys::warn_key_custody(layout, &key_path);
+        let backup_secret = keys::load_identity_checked(&key_path)?;
+        let salt = vault_salt(config)?;
+        let params = config.kdf.to_kdf_params();
+        derive_key(&password, &backup_secret, &salt, params).map_err(CliError::from)
     }
 }
 
@@ -150,5 +119,3 @@ pub fn prompt_new_password() -> Result<SecretString, CliError> {
 fn data_key_matches_vault(layout: &VaultLayout, data_key: &SecretString) -> bool {
     PasswordStore::load_path(data_key, &layout.passwords).is_ok()
 }
-
-use secrecy::ExposeSecret;

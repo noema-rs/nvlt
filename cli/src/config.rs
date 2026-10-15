@@ -9,7 +9,6 @@ use vault_core::KdfParams;
 use crate::error::CliError;
 
 pub const VAULT_CONFIG_FILE: &str = "config.toml";
-pub const NVLT_ENC_FILE: &str = "nvlt.enc";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BootstrapConfig {
@@ -49,12 +48,6 @@ pub struct VaultSection {
     pub totp_file: String,
     #[serde(default = "default_backup_file")]
     pub backup_file: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rate_limit_pub: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rate_generation: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,9 +78,6 @@ impl Default for VaultSection {
             files_dir: default_files_dir(),
             totp_file: default_totp_file(),
             backup_file: default_backup_file(),
-            device_id: None,
-            rate_limit_pub: None,
-            rate_generation: None,
         }
     }
 }
@@ -134,10 +124,7 @@ impl Config {
 pub fn generate_lock_string() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
-    base64::Engine::encode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        bytes,
-    )
+    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes)
 }
 
 fn default_vault_path() -> PathBuf {
@@ -169,10 +156,10 @@ fn default_sync_pub_file() -> String {
 }
 
 fn default_memory_cost() -> u32 {
-    65536
+    262144
 }
 fn default_time_cost() -> u32 {
-    3
+    4
 }
 fn default_parallelism() -> u32 {
     4

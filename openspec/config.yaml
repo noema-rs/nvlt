@@ -2,9 +2,14 @@ schema: spec-driven
 
 context: |
   Project: nvlt — desktop secret manager (Rust workspace). README.md overview; INIT.md full doc (English).
-  Crypto: age crate, Argon2id KDF (64MB, t=3, p=4), salt from config lock (HKDF); seeds in local nvlt.enc.
-  Composite key = password || primary TOTP seed; backup key = password || backup TOTP seed.
-  TOTP 6-digit code verifies seed possession only. Sync: host.age/host.pub (nvlt.enc never in git).
+  Version 2 (VERSION_2.md): breaking redesign; v1 vaults are re-initialized from a snapshot, no in-place upgrade.
+  Lock: unlock = master password + private key path. Keys are age X25519 identity files (AGE-SECRET-KEY-1..., public age1...).
+  KDF chain: password layer wrapped over key layer, sequential Argon2id (262144 KiB, t=4, p=4); salt from config lock (HKDF).
+  Never auto-discover the key: every unlock (and any feature needing the key) prompts the key path visible/echoed like a password prompt; the password stays hidden. Hard warning if the key path is under the vault root or on the same filesystem as the vault. Optional at-rest wrap of the key file with a separate passphrase (never the master password).
+  Key inventory: sync key (`.nvlt-sync/`, git snapshot transport), main unlock key (off machine), backup unlock key (strictly offline) + 1 master password.
+  Removed in v2: auth OTP/TOTP for unlock, rate limit, device binding, reveal, recovery bundle, rate-limit key, 2nd password (old recovery-bundle passphrase). `nvlt totp` site seeds are untouched.
+  Sync: host.age/host.pub (nvlt.enc never in git). Panic deletes local .age files; recovery = git snapshot + init --from-snapshot.
+  CLI: lifecycle/admin under `system` (init | status | backup | recover | rotate | snapshot | panic | config); data commands top level: pass, env, files, totp, ssh, unlock, lock, age (agent hidden). No `help` subcommand (bare `nvlt` lists commands).
   Workspace crates: core, passwords, envs, files, totp, ssh, cli (binary nvlt). Nix flake dev shell (rustc from nixpkgs unstable).
   Toolchain: match dev environment (currently Rust 1.98.x, edition 2021 unless flake pins otherwise).
   Docs: root README.md + INIT.md (English); README.md per crate; /// rustdoc on public API only.
@@ -29,7 +34,7 @@ rules:
     - Align module layout with INIT.md workspace diagram
     - Call out security/memory lifecycle explicitly
   tasks:
-    - Order: workspace skeleton → core modules → tests → later crates
+    - "Order: workspace skeleton → core modules → tests → later crates"
     - Checkbox tasks sized for one session (~1–2h each)
   specs:
     - Use SHALL/MUST; scenarios with #### and WHEN/THEN

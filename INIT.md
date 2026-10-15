@@ -2,7 +2,7 @@
 
 ## Overview
 
-**nvlt** is a desktop secret manager written in Rust that uses **age** for encryption. It combines a master password with TOTP seeds (primary and backup) to derive **composite keys**, and exposes these subsystems:
+**nvlt** is a desktop secret manager written in Rust that uses **age** for encryption. It unlocks with a **master password plus a private key file** (an age X25519 identity kept off the machine) and exposes these subsystems:
 
 1. **Passwords** — credential store by domain with multiple users and flexible fields.
 2. **Envs** — environment variable manager with granular commands.
@@ -10,23 +10,25 @@
 4. **TOTP** — standalone TOTP seeds (for services without an associated login password).
 5. **SSH** — keypairs registered by name; temporary activation under `~/.ssh`.
 
-Vault data lives in `.age` files under `~/.nvlt` by default. Vault TOTP seeds live in **rate duplas** under `rate/` (fifteen `NN.rt` + `NN.enc` pairs, device-bound and signed). Failed unlock burns one RT; success does not. **Recovery bundle** + **rate-limit private key** stay off the operational machine. Legacy **`nvlt.enc`** is supported only for migration hints. **nvlt does not persist credential plaintext on its own.**
+Vault data lives in `.age` files under `~/.nvlt` by default. The **unlock key** feeds the key layer of the KDF chain and is never stored under the vault root; the **backup unlock key** stays strictly offline. **nvlt does not persist credential plaintext on its own.**
+
+This document describes **version 2**. v1 vaults (TOTP-composite key, `rate/` duplas, device binding) are re-initialized from a snapshot; there is no in-place upgrade. See `VERSION_2.md` for the redesign.
 
 ---
 
 ## Design philosophy
 
-- **One vault, one password, primary + backup TOTP.** Day-to-day `.age` files use the key derived from password + primary seed; `backup.age` uses password + backup seed.
-- **The TOTP seed is part of the KDF, not classic offline 2FA.** The 6-digit code proves live possession; seed bytes feed Argon2id.
-- **Seeds in `rate/` duplas, not keyring or git.** Unlock selects the lowest valid RT slot, verifies password + TOTP, and re-wraps the paired `.enc` on success.
-- **Device bind:** `device_id` in config; mismatch wipes local operational files.
-- **Panic:** `nvlt panic` is the intentional compromise response: confirm, type `PANIC`, verify master password when `pass.age` exists, then wipe local `.age` stores, `rate/`, and clear `lock` / device / rate metadata in config. Git snapshot repos outside the vault root are untouched. Restore with `snapshot import` or an existing clone, then `nvlt init --from-snapshot --path <repo>` to mint new rate duplas; offline recovery bundle and rate-limit key stay off the machine.
-- **Public snapshots:** `snapshot export` packs `config.toml` + `.age` (including `ssh.age` when present) into `host.age` (sync host passphrase + pubkey). Does **not** include `rate/` or recovery material. Future: `snapshot sync` for diff/merge.
+- **One vault, one password, two keys.** Day-to-day `.age` files are protected by a data key derived from the master password *over* the main unlock key; `backup.age` uses the backup unlock key.
+- **The key is part of the KDF, not a decoration.** The key secret enters the Argon2id chain; without the key file the correct password reveals nothing.
+- **Never auto-discover the key.** Every unlock prompts for the key path, typed **visibly**, like a password prompt — you see which USB key you pointed at. The password stays hidden.
+- **Key custody is the design.** Keep the main key off the machine (USB/offline); keep the backup key strictly offline. If a key path is under the vault root or on the same filesystem as the vault, the CLI prints a hard warning.
+- **Panic:** `nvlt system panic` is the intentional compromise response: confirm, type `PANIC`, verify the master password when `pass.age` exists, then wipe local `.age` stores and clear `lock` in config. Git snapshot repos outside the vault root and your key files are untouched. Restore with `snapshot import` or an existing clone, then `nvlt system init --from-snapshot --path <repo>`.
+- **Public snapshots:** `snapshot export` packs `config.toml` + `.age` (including `ssh.age` when present) into `host.age` (sync host passphrase + pubkey). Does **not** include key files or sync private key. Future: `snapshot sync` for diff/merge.
 - **Separation by files, not by passwords.** Each env profile, each file under `files/`, each vault entry has its own encrypted file.
 - **The vault does not persist plaintext by itself.** Export to stdout or redirection to a file is the user’s responsibility.
-- **Crypto engine is `age`.** Business logic is ours.
-- **Slow derivation with Argon2id.** Resistant to specialized hardware attacks.
-- **Memory zeroization.** Passphrase and seeds use `SecretString` and are cleared on drop.
+- **Crypto engine is `age`.** Business logic is ours; `nvlt age` is a thin passthrough, never a reimplementation.
+- **Slow derivation with Argon2id.** 256 MiB, 4 iterations, 4 threads: resistant to specialized hardware attacks and the only brake when a key file sits on disk.
+- **Memory zeroization.** Password, key secrets, and wrap passphrases use `SecretString` and are cleared on drop.
 - **Explicit confirmation on destructive operations.** Every `remove` or destructive update asks for confirmation with a clear explanation.
 - **Flexible data model.** Each password entry can have multiple users, extra fields, and embedded TOTP.
 - **Unix philosophy.** The CLI prints to stdout; the user decides whether to redirect to a file.
@@ -40,7 +42,7 @@ Vault data lives in `.age` files under `~/.nvlt` by default. Vault TOTP seeds li
 ```
 noema-vault/
 ├── Cargo.toml              # workspace root
-├── core/                   # age + KDF + TOTP + lock→salt
+├── core/                   # age + KDF chain + identity + TOTP + lock→salt
 ├── passwords/              # subsystem 1
 ├── envs/                   # subsystem 2
 ├── files/                  # subsystem 3
@@ -56,9 +58,10 @@ noema-vault/
 ```
 core/
 ├── crypto.rs      # age wrapper
-├── kdf.rs         # Argon2id + derive_wrap_key (nvlt.enc)
+├── kdf.rs         # Argon2id KDF chain (password over key)
 ├── lock.rs        # lock → salt (HKDF)
-├── totp.rs        # generation and verification
+├── identity.rs    # load age X25519 identity files; optional passphrase wrap
+├── totp.rs        # generation and verification (site seeds)
 ├── secrets.rs     # SecretString, zeroization
 ├── vault.rs       # public core API
 └── error.rs       # typed errors
@@ -69,9 +72,14 @@ core/
 ```rust
 pub fn salt_from_lock(lock: &str) -> Result<[u8; 16], Error>;
 
+pub fn load_identity(
+    path: &Path,
+    wrap_passphrase: Option<&SecretString>,
+) -> Result<SecretString, Error>;
+
 pub fn derive_key(
     password: &SecretString,
-    seed: &SecretString,
+    key_secret: &SecretString,
     salt: &[u8],
     params: KdfParams,
 ) -> Result<SecretString, Error>;
@@ -99,22 +107,23 @@ pub fn generate_totp(
 ### Layer diagram
 
 ```
-┌─────────────────────────────────────────────┐
-│                CLI (clap)                   │
-│  nvlt pass │ env │ files │ totp │ ssh │ snapshot │
-└──────┬──────────┬──────────┬────────┬───────┘
-       │          │          │        │
-┌──────▼───┐ ┌────▼────┐ ┌───▼────┐ ┌─▼─────┐
-│passwords │ │  envs   │ │ files  │ │ totp  │
-│ (JSON)   │ │ (JSON)  │ │(bytes) │ │(JSON) │
-└──────┬───┘ └────┬────┘ └───┬────┘ └─┬─────┘
-       │          │          │        │
-       └──────────┼──────────┼────────┘
-                  │          │
-          ┌───────▼──────────▼───────┐
-          │          core            │
-          │  Argon2id + age + TOTP   │
-          └───────────┬──────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                       CLI (clap)                          │
+│  system init|status|backup|recover|rotate|snapshot|panic   │
+│  pass │ env │ files │ totp │ ssh │ age │ unlock │ lock     │
+└──────┬──────────┬──────────┬────────┬───────┬─────────────┘
+       │          │          │        │       │
+┌──────▼───┐ ┌────▼────┐ ┌───▼────┐ ┌─▼─────┐ ┌▼──────┐
+│passwords │ │  envs   │ │ files  │ │ totp  │ │  age  │
+│ (JSON)   │ │ (JSON)  │ │(bytes) │ │(JSON) │ │(pass) │
+└──────┬───┘ └────┬────┘ └───┬────┘ └─┬─────┘ └┬──────┘
+       │          │          │        │        │
+       └──────────┼──────────┼────────┘        │
+                  │          │                 │
+          ┌───────▼──────────▼───────┐  ┌──────▼──────┐
+          │          core            │  │  age crate  │
+          │  Argon2id chain + age    │  │ (passthrough)│
+          └───────────┬──────────────┘  └─────────────┘
                       │
           ┌───────────▼──────────────┐
           │     .age files on disk   │
@@ -125,63 +134,79 @@ pub fn generate_totp(
 
 ## Security model
 
-### Composite key derivation
+### KDF chain (password layer over key layer)
 
 ```
-salt = HKDF-SHA256(lock, info="nvlt-lock-v1")  # 16 bytes, memory only
+salt      = HKDF-SHA256(lock, info="nvlt-lock-v1")   # 16 bytes, memory only
 
-data_key = Argon2id(
-    password || primary_totp_seed,
+key_layer = Argon2id(                                 # from the key file
+    key_secret,
     salt,
-    params = { m: 64MB, t: 3, p: 4 }
+    params = { m: 256 MiB, t: 4, p: 4 }
 ) → 32 bytes
 
-backup_key = Argon2id(
-    password || backup_totp_seed,
-    salt,
-    params = { m: 64MB, t: 3, p: 4 }
+data_key  = Argon2id(                                 # password layer over key layer
+    password,
+    key_layer,
+    params = { m: 256 MiB, t: 4, p: 4 }
 ) → 32 bytes
 ```
 
-- The **primary TOTP seed** combines with the password to derive the key for day-to-day data: `pass.age`, `envs/*.age`, `files/*`, `totp.age`, `ssh.age`.
-- The **backup TOTP seed** combines with the password to derive the key that decrypts **`backup.age` only**.
-- The **6-digit TOTP code** is used only to **verify** that the user holds the seed before unlock.
+- The **main unlock key** feeds the key layer for day-to-day data: `pass.age`, `envs/*.age`, `files/*`, `totp.age`, `ssh.age`.
+- The **backup unlock key** feeds the key layer for `backup.age` only.
+- The chain is **sequential**: the password layer is applied over the key layer, so password-only guessing (without the key) reveals nothing, and key-only (without the password) must pass Argon2id per guess.
 - The 32-byte derived key is passed to `age` as `SecretString`.
 - `age` uses scrypt internally as a second derivation layer.
+- The exact byte composition lives in `core/kdf.rs`; the invariants above are the contract.
 
 ### Why Argon2id, not SHA256
 
 SHA256 is fast by design. An attacker with your `.age` files can try millions of passwords per second on a GPU. Argon2id is a KDF meant to be **slow and memory-hard**, making brute force impractical at recommended settings.
 
-Recommended parameters (64MB memory, 3 iterations, 4 threads) balance security and unlock time (~100–300ms on modern hardware).
+Default parameters (256 MiB memory, 4 iterations, 4 threads) balance security and unlock time. When the key file is stored on the same machine as the ciphertext, **Argon2id is the only brake on offline guessing**, which is why the costs are bumped from v1.
 
-### TOTP seed is part of the key
+### The key is part of the key derivation
 
-Unlike classic 2FA, in nvlt the TOTP seed **is not a separate authentication factor**. It is **part of the composite key**:
+Unlike a config flag or a device fingerprint, the unlock key **is cryptographic material**:
 
-- The seed enters Argon2id derivation.
-- Without the seed, the key cannot be derived, even with the correct password.
-- The 6-digit code is only **possession verification**, not an extra cryptographic factor.
+- The key secret enters the KDF chain.
+- Without the key, the key cannot be derived, even with the correct password.
+- Without the password, holding the key still requires brute-forcing Argon2id.
 
-**Benefit:** stolen password alone cannot decrypt anything without the seed.
+**Benefit:** a stolen password alone cannot decrypt anything without the key file.
 
-**Consequence:** losing the primary seed means losing access; backup TOTP and `recover` exist for that reason.
+**Consequence:** losing the main key means losing daily access; the offline **backup key** + `recover` exist for that reason.
 
-### Why derive from the seed, not the code
+### Key custody rules (non-negotiable)
 
-TOTP codes rotate every 30 seconds. If the key depended on the code, re-encrypting a file could fail when the window expires. Deriving from the seed keeps the key **stable for the session**.
+- The key path is **typed visibly** at every unlock; the password is not.
+- The key is **never auto-discovered** from config or previous use.
+- The main key should live **off the machine** (USB/offline). If its path is under the vault root or on the same filesystem, the CLI prints a **hard warning** at unlock.
+- The backup key must be stored **strictly offline**.
+- A key file may optionally be wrapped at rest with a **separate passphrase** (never the master password — that would be circular); it is decrypted in memory on use.
+
+### Residual risks (what actually matters in v2)
+
+1. **Session left unlocked too long** — an attacker at an unlocked terminal never hits any check. Mitigation: sensible agent TTL + sliding idle timeout; documented.
+2. **Private key saved on disk unencrypted** — key + ciphertext in hand = vault open (modulo password). Mitigation: hard warning at unlock + optional passphrase wrap.
+
+Device binding and rate limiting were removed in v2: they protect against neither risk, and a protocol-aware attacker bypasses both.
+
+### Why derive from key material, not time-based codes
+
+Time-based codes rotate every 30 seconds. If the vault key depended on a rotating code, re-encrypting a file could fail when the window expires. The **static key file** keeps the key stable for the session, while site TOTP codes remain a display-time convenience.
 
 ### Security chain
 
 ```
 Something you know:     Master password
-Something you have:     Primary TOTP seed (external app)
-Something you have:     Backup TOTP seed (offline, safe storage)
+Something you have:     Main unlock key file (off the machine, e.g. USB)
+Something you have:     Backup unlock key file (strictly offline)
 Inside the vault:       Website TOTPs (site seeds)
 ```
 
-- Stolen phone with primary seed → still need the password.
-- Stolen password → still need the primary seed.
+- Stolen USB with the main key → still need the password.
+- Stolen password → still need the key file.
 - Both stolen → vault is compromised.
 
 ### Secret lifecycle
@@ -189,9 +214,9 @@ Inside the vault:       Website TOTPs (site seeds)
 | Secret | Where it lives | When it is cleared |
 |---|---|---|
 | Master password | Memory (`SecretString`) | End of command (or agent TTL) |
-| Primary/backup seeds | `nvlt.enc` (wrapped with master password) | Persistent locally; re-wrapped on read |
+| Main/backup unlock key | Key file (`AGE-SECRET-KEY-1…`), off the machine | Persistent; read per unlock |
+| Key wrap passphrase | Memory | End of command |
 | `lock` | `{vault}/config.toml` | Persistent (not secret; derives salt) |
-| TOTP code | Memory | After verification |
 | Derived key | Memory / agent | Agent idle TTL |
 | Sync host passphrase | User’s head | Never in git |
 | Sync private key | `{sync}/.nvlt-sync/host.key` (gitignore) | Persistent locally |
@@ -212,16 +237,21 @@ The vault **does not write plaintext secrets by itself**, but plaintext can stil
 ```
 ~/.nvlt/
 ├── config.toml        ← lock, KDF, paths, sync names (host.age, host.pub)
-├── nvlt.enc           ← primary+backup seeds (LOCAL, not synced, mode 600)
 ├── pass.age
 ├── totp.age
 ├── ssh.age
-├── backup.age         ← data copy; NO TOTP seeds
+├── backup.age         ← data copy; NO unlock key material
 ├── envs/*.age
 └── files/*
 
 ~/.config/nvlt/config.toml   ← points path = ~/.nvlt only
+
+# Key files live OUTSIDE the vault root (USB/offline), e.g.:
+#   /media/usb/nvlt-main.key     AGE-SECRET-KEY-1…
+#   (offline copy)               AGE-SECRET-KEY-1…   ← backup key
 ```
+
+No `nvlt.enc`, no `rate/` directory: both were removed in v2.
 
 ### Public git repo (sync)
 
@@ -229,8 +259,8 @@ The vault **does not write plaintext secrets by itself**, but plaintext can stil
 my-repo/
 ├── host.pub           ← age pubkey (plaintext)
 └── host.age           ← tar(config + .age): outer = sync passphrase,
-                         inner = pubkey (see `nvlt snapshot export`)
-# Do NOT commit: nvlt.enc, host.key, .nvlt-sync/
+                         inner = pubkey (see `nvlt system snapshot export`)
+# Do NOT commit: host.key, .nvlt-sync/, any unlock key file
 ```
 
 ---
@@ -290,7 +320,7 @@ Raw bytes encrypted with `age`. No JSON wrapper.
 
 ### `totp.age` — Standalone TOTP
 
-For 2FA-only services. Site TOTPs tied to logins live embedded in `pass.age`.
+For 2FA-only services. Site TOTPs tied to logins live embedded in `pass.age`. This subsystem is unchanged from v1: it stores **site seeds**, not the vault lock.
 
 ```json
 {
@@ -311,7 +341,7 @@ For 2FA-only services. Site TOTPs tied to logins live embedded in `pass.age`.
 
 ### `backup.age` — Data backup
 
-**Does NOT contain the primary seed.** Only a copy of vault data, encrypted with the backup key.
+**Does NOT contain unlock key material.** Only a copy of vault data, encrypted with the backup-key-derived key.
 
 ```json
 {
@@ -329,6 +359,8 @@ For 2FA-only services. Site TOTPs tied to logins live embedded in `pass.age`.
 ---
 
 ## CLI
+
+Lifecycle and admin commands live under `system`; data commands stay top level. There is **no `help` subcommand** — use `--help` anywhere, or run bare `nvlt` for the command list.
 
 ### Password commands
 
@@ -403,28 +435,33 @@ nvlt totp export <site> <path>
 nvlt totp import <path>
 ```
 
-### Config commands
+### Age commands (thin passthrough)
 
 ```bash
-nvlt config show
-nvlt config set <key> <value>
-nvlt config path <path>
+nvlt age encrypt -r <age1…> [-R <recipients-file>] [-f <input>] [-o <out>]
+nvlt age encrypt -p [-f <input>] [-o <out>]      # passphrase (interactive)
+nvlt age decrypt -i <identity.key> [-f <input>] [-o <out>]
+nvlt age identity [-o <key>] [<identity.key>]   # -o writes <key> + <key>.pub
 ```
 
-### Lifecycle, session, and snapshot
+### System (lifecycle, session, config, snapshot)
 
 ```bash
-nvlt init
-nvlt init --from-snapshot --path <dir> [--identity <host.key>]
-nvlt status
+nvlt system init
+nvlt system init --from-snapshot --path <dir> [--identity <host.key>]
+nvlt system status
+nvlt system backup
+nvlt system recover
+nvlt system rotate
+nvlt system snapshot export --path <dir>
+nvlt system snapshot import --path <dir>
+nvlt system panic
+nvlt system config show
+nvlt system config set <key> <value>
+nvlt system config path <path>
+
 nvlt unlock --for 10m
 nvlt lock
-nvlt backup
-nvlt recover
-nvlt rotate
-nvlt reveal primary|backup
-nvlt snapshot export --path <dir>
-nvlt snapshot import --path <dir>
 ```
 
 ### SSH commands (`ssh.age`)
@@ -525,7 +562,7 @@ Any operation that **modifies** or **deletes** existing data prompts for explici
     Delete this entry? [y/N]:
 ```
 
-### `nvlt backup`
+### `nvlt system backup`
 
 ```
 ⚠️  You are about to sync backup.age with the current vault state.
@@ -534,30 +571,40 @@ Any operation that **modifies** or **deletes** existing data prompts for explici
     Continue? [y/N]:
 ```
 
-### `nvlt recover`
+### `nvlt system recover`
 
 ```
-⚠️  You are about to recover your vault using the backup TOTP.
-    A new primary TOTP will be generated.
+⚠️  You are about to recover your vault using the backup key.
+    You may issue a new main unlock key.
     Your current vault files will be REPLACED.
 
     Continue? [y/N]:
 ```
 
-### `nvlt rotate`
+### `nvlt system rotate`
 
 ```
 ⚠️  You are about to rotate your credentials.
     This will:
-      - Generate a new primary TOTP
-      - Generate a new backup TOTP
-      - Re-encrypt all vault files
       - Optionally change your master password
+      - Optionally generate a new main key
+      - Optionally generate a new backup key
+      - Re-encrypt all vault files
 
     The old credentials will no longer work.
-    Make sure you have your new credentials saved before continuing.
+    Make sure you have your new keys saved before continuing.
 
     Continue? [y/N]:
+```
+
+### `nvlt system panic`
+
+```
+⚠️  EMERGENCY WIPE. This deletes local encrypted vault files and clears `lock`.
+    Type PANIC to confirm, then confirm the destructive prompt.
+
+    PANIC
+    This action cannot be undone. Continue? [y/N]:
 ```
 
 ---
@@ -567,43 +614,44 @@ Any operation that **modifies** or **deletes** existing data prompts for explici
 ### Initialize (new vault)
 
 ```bash
-nvlt init
+nvlt system init
 ```
 
-1. Generate random `lock` in `config.toml`.
+1. Generate a random `lock` in `config.toml`.
 2. Prompt for master password (twice).
-3. Generate and verify primary and backup TOTP seeds (QR / otpauth).
-4. Derive keys with `salt = HKDF(lock)` in memory.
-5. Create empty `.age` stores and `backup.age`.
-6. Write **`nvlt.enc`** with both seeds (wrapped with master password).
-7. Prompt to save seeds in an authenticator app (offline).
+3. Generate the **main** and **backup** age X25519 keypairs.
+4. Prompt (visibly) for the **main key** path and write it; prompt (visibly) for the **backup key** path and write it, printing offline-storage instructions.
+5. Derive keys with `salt = HKDF(lock)` in memory.
+6. Create empty `.age` stores and `backup.age`.
+
+No rate duplas, no recovery bundle, no device registration.
 
 ### Bootstrap from snapshot (new machine)
 
 ```bash
-nvlt init --from-snapshot --path ./my-repo [--identity ~/.backup/host.key]
+nvlt system init --from-snapshot --path ./my-repo [--identity ~/.backup/host.key]
 ```
 
 1. Prompt for **sync host passphrase** and decrypt `host.age` with the sync private key.
 2. Extract **`config.toml`** (includes **`lock`**) and all `.age` files into the vault root.
-3. Prompt for **master password**, primary/backup **TOTP seeds**, and verification codes.
-4. Proof-decrypt `pass.age`, then write local **`nvlt.enc`**.
+3. Prompt for **master password** and the **main unlock key** path (visibly).
+4. Proof-decrypt `pass.age`. If the main key is lost, use the offline backup key with `recover` instead.
 
 Default identity path: `{path}/.nvlt-sync/host.key` (copy from the machine that first ran `snapshot export`).
 
 ### Snapshot only (update ciphertext)
 
-When **`nvlt.enc` already works** on this machine:
+When the main key already works on this machine:
 
 ```bash
-nvlt snapshot import --path ./my-repo
+nvlt system snapshot import --path ./my-repo
 nvlt unlock --for 10m
 ```
 
 ### Publish snapshot (git)
 
 ```bash
-nvlt snapshot export --path ./my-repo
+nvlt system snapshot export --path ./my-repo
 ```
 
 The **sync host passphrase** is separate from the vault master password. The sync private key lives at `{repo}/.nvlt-sync/host.key` (add to `.gitignore`).
@@ -612,8 +660,8 @@ The **sync host passphrase** is separate from the vault master password. The syn
 
 ```bash
 nvlt pass get github.com work@company.com
-# → password + primary TOTP code
-# → verify TOTP, derive data_key, decrypt pass.age in memory, display, zeroize
+# → prompt (visible) for the main key path + (hidden) master password
+# → derive data_key, decrypt pass.age in memory, display, zeroize
 ```
 
 ### Daily use — envs
@@ -636,35 +684,42 @@ nvlt files decrypt document.pdf ~/Downloads/document.pdf
 nvlt totp get 2fa-only.example
 ```
 
-### `nvlt backup`
+### `nvlt system backup`
 
-1. Unlock: password + **primary** TOTP code (seed from `nvlt.enc`).
-2. Prompt for **backup** TOTP code (seed from `nvlt.enc`, not typed seed text).
+1. Unlock: master password + **main key** path.
+2. Prompt for the **backup key** path (visible), not a code and not pasted key bytes.
 3. Derive `data_key` and `backup_key`.
 4. Decrypt all data with `data_key`.
 5. Re-encrypt that snapshot with `backup_key` into `backup.age`.
 6. Confirm before overwrite.
 
-**Important:** `backup.age` does **not** contain the primary seed.
+**Important:** `backup.age` does **not** contain unlock key material.
 
-### `nvlt recover`
+### `nvlt system recover`
 
-1. Password + backup TOTP verification.
-2. Decrypt `backup.age` with `backup_key`.
-3. **Generate a new primary seed.**
-4. Confirm, re-encrypt stores with new `data_key`; **`ssh.age` is reset** (SSH keys are not in backup.age).
-5. Update **`nvlt.enc`** with the new primary seed.
-6. Display the new primary seed.
+1. Master password + **backup key**.
+2. Decrypt `backup.age` with the backup-derived key.
+3. **Optionally issue a new main key.**
+4. Confirm, re-encrypt stores under the restored or new key; **`ssh.age` is reset** (SSH keys are not in `backup.age`).
+5. Invalidate the old main key.
 
-**Important:** `recover` does **not** restore the old primary seed.
+**Important:** `recover` does **not** restore a lost main key itself; it replaces it.
 
-### `nvlt rotate`
+### `nvlt system rotate`
 
-1. Unlock with current credentials (seeds from `nvlt.enc`).
-2. Optional new password and new primary/backup seeds (generated if you confirm rotation).
+1. Unlock with the current password and main key.
+2. Optional new password and newly generated main/backup keys.
 3. Confirm, snapshot vault data with the old data key, re-encrypt stores and **`ssh.age`** with the new data key (same `lock` → salt).
-4. Rewrite **`nvlt.enc`**, refresh `backup.age`, clear the agent session.
-5. Save printed primary/backup seeds; run `nvlt snapshot export` before git if you use snapshots.
+4. Write the new key files to the prompted paths, refresh `backup.age`, clear the agent session.
+5. Run `nvlt system snapshot export` before git if you use snapshots.
+
+### `nvlt system panic`
+
+1. Confirm and type `PANIC`.
+2. Verify the master password when `pass.age` exists.
+3. Wipe local `.age` stores and clear `lock` in config; key files outside the vault root are untouched.
+4. Restore with `snapshot import` or an existing clone, then `nvlt system init --from-snapshot`.
+5. If the main key is lost, `recover` with the offline backup key.
 
 ---
 
@@ -688,7 +743,7 @@ After `nvlt unlock --for 10m`, subcommands `pass`, `env`, `files`, `totp`, and `
 
 ## On-disk structure
 
-See **On-disk layout (local vault)** above. Summary: **`lock` in config**, local **`nvlt.enc`**, syncable `.age` ciphertexts.
+See **On-disk layout (local vault)** above. Summary: **`lock` in config**, syncable `.age` ciphertexts, and **unlock key files kept outside the vault**.
 
 ---
 
@@ -718,18 +773,18 @@ host_file = "host.age"
 pub_file = "host.pub"
 
 [kdf]
-memory_cost = 65536
-time_cost = 3
+memory_cost = 262144
+time_cost = 4
 parallelism = 4
 ```
 
-`nvlt config show` prints bootstrap + vault config. Keys include `vault.path`, `vault.lock`, `sync.host_file`, `kdf.*`, etc.
+`nvlt system config show` prints bootstrap + vault config. Keys include `vault.path`, `vault.lock`, `sync.host_file`, `kdf.*`, etc. **No key path or key material is stored.**
 
 ---
 
 ## Dependencies
 
-See workspace `Cargo.toml` for pinned versions (`hkdf`, `sha2`, `tar`, `age-core`, etc.). Subcrates depend on `core`; `cli` wires passwords, envs, files, totp, ssh, sync, and lifecycle.
+See workspace `Cargo.toml` for pinned versions (`hkdf`, `sha2`, `tar`, `age-core`, etc.). Subcrates depend on `core`; `cli` wires passwords, envs, files, totp, ssh, age, sync, and lifecycle.
 
 ---
 
@@ -740,7 +795,7 @@ See workspace `Cargo.toml` for pinned versions (`hkdf`, `sha2`, `tar`, `age-core
 - Multiple vaults per user (today: single path in bootstrap config).
 - Optional GUI on the same APIs.
 
-**Not planned:** automatic migration from legacy layouts (`salt.bin`, `vault` binary name, `~/.secrets`). New installs use `~/.nvlt` + `nvlt.enc`.
+**Not planned:** automatic in-place migration from v1 layouts (`rate/`, `nvlt.enc` device binding). v1 vaults are re-initialized from a snapshot.
 
 ---
 
@@ -751,20 +806,22 @@ See workspace `Cargo.toml` for pinned versions (`hkdf`, `sha2`, `tar`, `age-core
 | **Binary** | `nvlt` |
 | **Language** | Rust |
 | **Crypto** | Official `age` crate |
-| **Vault KDF** | Argon2id (64MB, 3 iterations, 4 threads) |
+| **Vault KDF** | Argon2id chain (256 MiB, 4 iterations, 4 threads) |
 | **Salt** | HKDF-SHA256 from config `lock` (`nvlt-lock-v1`), memory only |
-| **Vault seeds** | Local `nvlt.enc` (master-password wrap); not in git |
+| **Unlock** | Master password + main unlock key file (age X25519), path typed visibly |
+| **Unlock keys** | Main (off machine) + backup (strictly offline); `AGE-SECRET-KEY-1…` |
 | **Git snapshot** | `host.age` + `host.pub`; sync host passphrase ≠ master password |
-| **Credentials** | Password + primary TOTP seed + backup TOTP seed |
-| **Data / backup derivation** | Argon2id(password ∥ seed, salt) |
+| **Credentials** | Password + main unlock key (+ backup key for `backup.age`) |
+| **Data / backup derivation** | Argon2id chain: key layer, then password layer over it |
 | **Storage** | `~/.nvlt` (default) + bootstrap `~/.config/nvlt` |
-| **Subsystems** | Passwords, Envs, Files, TOTP, SSH |
-| **Backup** | Encrypted data copy; no primary seed |
-| **Recover / rotate** | Update stores and `nvlt.enc` |
+| **Subsystems** | Passwords, Envs, Files, TOTP, SSH, age |
+| **Backup** | Encrypted data copy; no unlock key material |
+| **Recover / rotate** | Replace main key; re-encrypt stores |
 | **Session** | `unlock --for` + Unix agent |
 | **Confirmations** | Destructive ops require confirmation |
 | **Zeroization** | `secrecy::SecretString`; core dumps disabled in CLI |
 | **CLI style** | stdout; redirects are user responsibility |
+| **Not in v2** | auth TOTP, rate limit, device binding, `reveal`, recovery bundle; `nvlt totp` site seeds stay |
 
 ---
 
@@ -772,9 +829,11 @@ See workspace `Cargo.toml` for pinned versions (`hkdf`, `sha2`, `tar`, `age-core
 
 | Subsystem | Commands |
 |---|---|
-| **Lifecycle** | `init`, `init --from-snapshot`, `status`, `backup`, `recover`, `rotate`, `reveal`, `unlock`, `lock` |
-| **Snapshot** | `snapshot export --path`, `snapshot import --path` |
-| **Config** | `config show`, `config set`, `config path` |
+| **System (lifecycle)** | `system init`, `system init --from-snapshot`, `system status`, `system backup`, `system recover`, `system rotate`, `system panic` |
+| **Snapshot** | `system snapshot export --path`, `system snapshot import --path` |
+| **Config** | `system config show`, `system config set`, `system config path` |
+| **Session** | `unlock`, `lock` |
+| **Age** | `age encrypt`, `age decrypt`, `age identity` |
 | **Passwords** | `pass search`, `pass get`, `pass list`, `pass add`, `pass edit`, `pass remove` |
 | **Envs** | `env list`, `env get`, `env set`, `env unset`, `env add`, `env remove`, `env export`, `env load` |
 | **Files** | `files encrypt`, `files decrypt`, `files list`, `files remove` |

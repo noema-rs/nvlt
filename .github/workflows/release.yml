@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Linux x86_64 release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build nvlt
+        run: cargo build --release -p cli
+
+      - name: Package archive
+        run: |
+          VERSION="${{ github.ref_name }}"
+          BASE="nvlt-${VERSION}-linux-x86_64"
+          install -m 755 target/release/nvlt nvlt
+          tar czf "${BASE}.tar.gz" nvlt
+          sha256sum "${BASE}.tar.gz" | tee "${BASE}.tar.gz.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            nvlt-*-linux-x86_64.tar.gz
+            nvlt-*-linux-x86_64.tar.gz.sha256
+          generate_release_notes: true
+          body: |
+            Pre-built `nvlt` for **Linux x86_64**. Extract and put `nvlt` on your `PATH`.
+
+            Verify with the `.sha256` file.
+
+            From source: `cargo install --git https://github.com/${{ github.repository }} --tag ${{ github.ref_name }} -p cli`

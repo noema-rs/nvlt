@@ -3,29 +3,23 @@ use std::fs;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
-use secrecy::{ExposeSecret, SecretString};
+use rpassword::prompt_password;
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use totp_rs::{Algorithm, Secret, TOTP};
-use vault_core::{decrypt, encrypt, verify_totp};
+use vault_core::{decrypt, derive_key, encrypt, generate_identity};
 use vault_envs::EnvVault;
 use vault_files::FileVault;
 use vault_passwords::{PasswordStore, PasswordsDocument};
 use vault_totp::{TotpDocument, TotpStore};
 
-use crate::config::Config;
+use crate::config::{generate_lock_string, Config};
 use crate::confirm::{confirm, confirm_or_cancel};
 use crate::error::CliError;
+use crate::keys;
 use crate::paths::VaultLayout;
-use crate::config::generate_lock_string;
-use crate::device::compute_device_id;
-use crate::rate_limit::{
-    self, generate_keypair, remint_with_new_keypair, setup_local_gate_on_init,
-    write_recovery_bundle,
-};
 use crate::unlock::{prompt_new_password, vault_salt, UnlockSession};
-use ed25519_dalek::SigningKey;
 
-const BACKUP_VERSION: u32 = 2;
+const BACKUP_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BackupPayload {
@@ -51,20 +45,14 @@ struct BackupFileEntry {
 pub fn status(config: &Config) -> Result<(), CliError> {
     let layout = VaultLayout::from_config(config);
     println!("Vault root: {}", layout.root.display());
-    println!("  lock:      {}", config.vault.lock.as_deref().unwrap_or("(unset)"));
-    if layout.has_rate_duplas() {
-        let valid = rate_limit::count_valid_slots(&layout, config).unwrap_or(0);
-        let gen = config.vault.rate_generation.unwrap_or(0);
-        println!("  rate duplas: present (generation {gen}, {valid}/{} valid slots)", rate_limit::RATE_SLOT_COUNT);
-    } else {
-        println!("  rate duplas: {}", flag(false));
-        if layout.nvlt_enc.is_file() {
-            println!("  nvlt.enc:  legacy present (migrate via rate-limit renew)");
-        }
-    }
+    println!(
+        "  lock:      {}",
+        config.vault.lock.as_deref().unwrap_or("(unset)")
+    );
     println!("  passwords: {}", flag(layout.passwords.is_file()));
     println!("  totp:      {}", flag(layout.totp.is_file()));
     println!("  backup:    {}", flag(layout.backup.is_file()));
+    println!("  ssh:       {}", flag(layout.ssh.is_file()));
     println!("  envs dir:  {}", flag(layout.envs_dir.is_dir()));
     println!("  files dir: {}", flag(layout.files_dir.is_dir()));
     match crate::agent::agent_status() {
@@ -93,35 +81,49 @@ pub fn init(config: &mut Config) -> Result<(), CliError> {
             vault_root: layout.root.clone(),
         });
     }
+    if vault_has_ciphertext(&layout) {
+        return Err(CliError::Config(format!(
+            "encrypted vault files already exist under {}; init would overwrite them.\n\
+             Re-initializing without your password, keys, or backup causes data loss.\n\
+             Use `nvlt system init --from-snapshot` or `nvlt system recover` instead.",
+            layout.root.display()
+        )));
+    }
 
     config.vault.lock = Some(generate_lock_string());
 
     let password = prompt_new_password()?;
 
-    println!("Generating primary TOTP seed...");
-    let primary_seed = generate_totp_seed();
-    setup_and_verify_authenticator("primary", &primary_seed, &layout)?;
+    println!("Generating main and backup unlock keys...");
+    let (main_secret, main_public) = generate_identity()?;
+    let (backup_secret, backup_public) = generate_identity()?;
 
-    println!("Generating backup TOTP seed...");
-    let backup_seed = generate_totp_seed();
-    setup_and_verify_authenticator("backup", &backup_seed, &layout)?;
+    let main_path = keys::prompt_key_path("Main unlock key file path: ")?;
+    keys::warn_key_custody(&layout, &main_path);
+    let backup_path = keys::prompt_key_path("Backup unlock key file path: ")?;
+    keys::warn_key_custody(&layout, &backup_path);
 
     println!("Creating vault configuration and encrypted data files...");
-    let signing = init_with_secrets(config, &password, &primary_seed, &backup_seed)?;
+    init_with_secrets(config, &password, &main_secret, &backup_secret)?;
     crate::config::save_config(config)?;
-    prompt_write_recovery_bundle(
-        config,
-        &primary_seed,
-        &backup_seed,
-        &signing,
-        config.vault.rate_generation.unwrap_or(1),
-    )?;
+
+    keys::write_identity_file(&main_path, &main_secret, None)?;
+    keys::write_identity_file(&backup_path, &backup_secret, None)?;
     let _ = crate::agent::lock();
 
     println!();
     println!("Vault initialized at {}", layout.root.display());
-    println!("Primary and backup authenticators verified. Keep both seeds offline.");
-    println!("Store the recovery bundle and rate-limit key off this machine.");
+    println!(
+        "Main unlock key:   {}  ({main_public})",
+        main_path.display()
+    );
+    println!(
+        "Backup unlock key: {}  ({backup_public})",
+        backup_path.display()
+    );
+    println!();
+    println!("Store the BACKUP key strictly offline. It is required for `nvlt system backup` and `nvlt system recover`.");
+    println!("Keep the main key off this machine when possible.");
     Ok(())
 }
 
@@ -133,83 +135,44 @@ pub fn init_from_snapshot(
     crate::snapshot::materialize_snapshot(&config, &snapshot_root, identity.as_deref())?;
 
     let config = crate::config::load_config()?;
-    let mut config = config;
-    attach_local_rate_duplas(&mut config)?;
-
     let layout = VaultLayout::from_config(&config);
-    println!(
-        "Vault ready at {} with local rate duplas.",
-        layout.root.display()
-    );
-    Ok(())
-}
-
-fn attach_local_rate_duplas(config: &mut Config) -> Result<(), CliError> {
-    let layout = VaultLayout::from_config(config);
     if !layout.passwords.is_file() {
         return Err(CliError::Config(
-            "no encrypted vault data found after snapshot extract; check the snapshot bundle".into(),
+            "no encrypted vault data found after snapshot extract; check the snapshot bundle"
+                .into(),
         ));
     }
-    config.lock_str().map_err(|_| {
-        CliError::Config(
-            "config.toml missing lock after snapshot extract".into(),
-        )
-    })?;
+    config
+        .lock_str()
+        .map_err(|_| CliError::Config("config.toml missing lock after snapshot extract".into()))?;
 
-    if layout.has_rate_duplas() {
-        confirm_or_cancel(
-            "⚠️  Local rate duplas already exist and will be replaced after successful verification.\n\
-                Continue? [y/N]: ",
-        )?;
-    }
+    let password = SecretString::new(prompt_password("Master password: ").map_err(CliError::Io)?);
+    let key_path = keys::prompt_key_path("Main unlock key file path: ")?;
+    keys::warn_key_custody(&layout, &key_path);
+    let key_secret = keys::load_identity_checked(&key_path)?;
 
-    let password = prompt_new_password_for_unlock()?;
-    let primary_seed = prompt_totp_seed("Primary TOTP seed: ")?;
-    let backup_seed = prompt_totp_seed("Backup TOTP seed: ")?;
-    verify_totp_setup("primary", &primary_seed)?;
-    verify_totp_setup("backup", &backup_seed)?;
-
-    let salt = vault_salt(config)?;
+    let salt = vault_salt(&config)?;
     let params = config.kdf.to_kdf_params();
-    let data_key = vault_core::derive_key(&password, &primary_seed, &salt, params)?;
+    let data_key = derive_key(&password, &key_secret, &salt, params)?;
     if PasswordStore::load_path(&data_key, &layout.passwords).is_err() {
         return Err(CliError::Config(
-            "credentials did not decrypt existing vault data".into(),
+            "credentials did not decrypt existing vault data; \
+             check the master password and main key, or recover with your backup key"
+                .into(),
         ));
     }
 
-    let (signing, _) = generate_keypair()?;
-    setup_local_gate_on_init(
-        config,
-        &layout,
-        &password,
-        &primary_seed,
-        &backup_seed,
-        &signing,
-        params,
-    )?;
-    crate::config::save_config(config)?;
-    prompt_write_recovery_bundle(
-        config,
-        &primary_seed,
-        &backup_seed,
-        &signing,
-        config.vault.rate_generation.unwrap_or(1),
-    )?;
-    if layout.nvlt_enc.is_file() {
-        let _ = fs::remove_file(&layout.nvlt_enc);
-    }
-    println!("Local rate duplas written under {}", layout.rate_dir.display());
+    println!("Vault ready at {}.", layout.root.display());
+    println!("Unlock with your master password and main key, or recover with the backup key if the main key is lost.");
     Ok(())
 }
 
 pub(crate) fn init_with_secrets(
     config: &mut Config,
     password: &SecretString,
-    primary_seed: &SecretString,
-    backup_seed: &SecretString,
-) -> Result<SigningKey, CliError> {
+    main_secret: &SecretString,
+    backup_secret: &SecretString,
+) -> Result<(), CliError> {
     let layout = VaultLayout::from_config(config);
     if layout.is_initialized(config) {
         return Err(CliError::AlreadyInitialized {
@@ -221,8 +184,8 @@ pub(crate) fn init_with_secrets(
 
     let salt = vault_salt(config)?;
     let params = config.kdf.to_kdf_params();
-    let data_key = vault_core::derive_key(password, primary_seed, &salt, params)?;
-    let backup_key = vault_core::derive_key(password, backup_seed, &salt, params)?;
+    let data_key = derive_key(password, main_secret, &salt, params)?;
+    let backup_key = derive_key(password, backup_secret, &salt, params)?;
 
     PasswordStore::empty().save_path(&data_key, &layout.passwords)?;
     TotpStore::empty().save_path(&data_key, &layout.totp)?;
@@ -236,61 +199,6 @@ pub(crate) fn init_with_secrets(
     };
     write_backup(&empty_backup, &backup_key, &layout)?;
 
-    let (signing, _) = generate_keypair()?;
-    setup_local_gate_on_init(
-        config,
-        &layout,
-        password,
-        primary_seed,
-        backup_seed,
-        &signing,
-        params,
-    )?;
-    Ok(signing)
-}
-
-fn prompt_write_recovery_bundle(
-    config: &Config,
-    primary: &SecretString,
-    backup: &SecretString,
-    signing: &SigningKey,
-    generation: u32,
-) -> Result<(), CliError> {
-    let computed = compute_device_id()?;
-    let device_id = config
-        .vault
-        .device_id
-        .as_deref()
-        .unwrap_or(&computed);
-    let bundle_path = {
-        let p = rpassword::prompt_password("Recovery bundle output path: ").map_err(CliError::Io)?;
-        std::path::PathBuf::from(p.trim())
-    };
-    let pass1 = SecretString::new(
-        rpassword::prompt_password("Recovery bundle passphrase: ").map_err(CliError::Io)?,
-    );
-    let pass2 = SecretString::new(
-        rpassword::prompt_password("Confirm recovery bundle passphrase: ").map_err(CliError::Io)?,
-    );
-    if pass1.expose_secret() != pass2.expose_secret() {
-        return Err(CliError::Config("recovery passphrases do not match".into()));
-    }
-    write_recovery_bundle(
-        &bundle_path,
-        &pass1,
-        device_id,
-        primary,
-        backup,
-        signing,
-        generation,
-    )?;
-    let key_path = bundle_path.with_extension("rate-limit-key");
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    fs::write(&key_path, STANDARD.encode(signing.to_bytes()))?;
-    crate::config::set_private_file_permissions(&key_path)?;
-    println!("Recovery bundle: {}", bundle_path.display());
-    println!("Rate-limit private key (also inside bundle): {}", key_path.display());
-    println!("Move both off this machine; they are required for rate-limit renew.");
     Ok(())
 }
 
@@ -305,6 +213,16 @@ pub fn backup(config: &Config) -> Result<(), CliError> {
 
     let session = UnlockSession::unlock_interactive(config, &layout)?;
     let backup_key = session.derive_backup_key(config, &layout)?;
+
+    if layout.backup.is_file() {
+        read_backup(&layout, &backup_key).map_err(|_| {
+            CliError::Config(
+                "backup key or master password did not open the existing backup.age; \
+                 check the backup key file"
+                    .into(),
+            )
+        })?;
+    }
 
     let data = load_backup_data(&layout, &session.data_key)?;
     write_backup(
@@ -323,125 +241,32 @@ pub fn backup(config: &Config) -> Result<(), CliError> {
 pub fn recover(config: &Config) -> Result<(), CliError> {
     let layout = VaultLayout::from_config(config);
     confirm_or_cancel(
-        "⚠️  You are about to recover your vault using the backup TOTP.\n\
-            A new primary TOTP will be generated.\n\
-            Your current vault files will be REPLACED.\n\
+        "⚠️  You are about to recover your vault using the backup unlock key.\n\
+            A new main unlock key will be generated and your current vault files will be REPLACED.\n\
          \n\
             Continue? [y/N]: ",
     )?;
 
-    let password = prompt_new_password_for_unlock()?;
-    let backup_seed = if layout.has_rate_duplas() {
-        rate_limit::guard_device(config)?;
-        let slot = rate_limit::select_active_slot(&layout, config)?;
-        let params = config.kdf.to_kdf_params();
-        let (_primary, backup) =
-            rate_limit::load_primary_from_slot(&layout, config, slot, &password, params)?;
-        let _ = rate_limit::burn_slot(&layout, slot);
-        backup
-    } else if layout.nvlt_enc.is_file() {
-        let params = config.kdf.to_kdf_params();
-        crate::nvlt_enc::load_backup_seed(&layout, &password, params)?
-    } else {
-        prompt_totp_seed("Backup TOTP seed: ")?
-    };
+    let password = SecretString::new(prompt_password("Master password: ").map_err(CliError::Io)?);
+    let backup_path = keys::prompt_key_path("Backup key file path: ")?;
+    keys::warn_key_custody(&layout, &backup_path);
+    let backup_secret = keys::load_identity_checked(&backup_path)?;
+
     let salt = vault_salt(config)?;
-    let code = rpassword::prompt_password("Backup TOTP code: ").map_err(CliError::Io)?;
-    if !vault_core::verify_totp(&backup_seed, code.trim())? {
-        return Err(CliError::UnlockCancelled);
-    }
-    let backup_key =
-        vault_core::derive_key(&password, &backup_seed, &salt, config.kdf.to_kdf_params())?;
-    let payload = read_backup(&layout, &backup_key)?;
-
-    let new_primary = generate_totp_seed();
     let params = config.kdf.to_kdf_params();
-    let data_key = vault_core::derive_key(&password, &new_primary, &salt, params)?;
+    let backup_key = derive_key(&password, &backup_secret, &salt, params)?;
+    let payload = read_backup(&layout, &backup_key).map_err(|_| {
+        CliError::Config("backup key or master password did not decrypt backup.age".into())
+    })?;
 
+    let (new_main_secret, new_main_public) = generate_identity()?;
+    let new_main_path = keys::prompt_key_path("New main unlock key file path: ")?;
+    keys::warn_key_custody(&layout, &new_main_path);
+
+    let data_key = derive_key(&password, &new_main_secret, &salt, params)?;
     restore_backup_data(&layout, &data_key, payload.data)?;
     reset_ssh_store(&layout, &data_key)?;
-    let mut cfg = config.clone();
-    let signing = remint_with_new_keypair(
-        &mut cfg,
-        &layout,
-        &password,
-        &new_primary,
-        &backup_seed,
-        params,
-    )?;
-    crate::config::save_config(&cfg)?;
-    prompt_write_recovery_bundle(
-        &cfg,
-        &new_primary,
-        &backup_seed,
-        &signing,
-        cfg.vault.rate_generation.unwrap_or(1),
-    )?;
-
-    let refreshed = load_backup_data(&layout, &data_key)?;
-    write_backup(
-        &BackupPayload {
-            version: BACKUP_VERSION,
-            data: refreshed,
-            created_at: Utc::now(),
-        },
-        &backup_key,
-        &layout,
-    )?;
-
-    println!("Recovery complete. New primary TOTP seed:");
-    println!("{}", new_primary.expose_secret());
-    Ok(())
-}
-
-pub fn rotate(config: &Config) -> Result<(), CliError> {
-    let layout = VaultLayout::from_config(config);
-    confirm_or_cancel(
-        "⚠️  You are about to rotate your credentials.\n\
-            This will generate new primary and backup TOTP seeds,\n\
-            re-encrypt all vault files, and optionally change your master password.\n\
-            The old credentials will no longer work.\n\
-         \n\
-            Continue? [y/N]: ",
-    )?;
-
-    let session = UnlockSession::unlock_interactive(config, &layout)?;
-    session.derive_backup_key(config, &layout)?;
-
-    let snapshot = load_backup_data(&layout, &session.data_key)?;
-
-    let new_password = if confirm("Change master password? [y/N]: ")? {
-        prompt_new_password()?
-    } else {
-        session.password.clone()
-    };
-    let new_primary = generate_totp_seed();
-    let new_backup = generate_totp_seed();
-    let salt = vault_salt(config)?;
-    let params = config.kdf.to_kdf_params();
-
-    let data_key = vault_core::derive_key(&new_password, &new_primary, &salt, params)?;
-    let backup_key = vault_core::derive_key(&new_password, &new_backup, &salt, params)?;
-
-    restore_backup_data(&layout, &data_key, snapshot)?;
-    re_encrypt_ssh_store(&layout, &session.data_key, &data_key)?;
-    let mut cfg = config.clone();
-    let signing = remint_with_new_keypair(
-        &mut cfg,
-        &layout,
-        &new_password,
-        &new_primary,
-        &new_backup,
-        params,
-    )?;
-    crate::config::save_config(&cfg)?;
-    prompt_write_recovery_bundle(
-        &cfg,
-        &new_primary,
-        &new_backup,
-        &signing,
-        cfg.vault.rate_generation.unwrap_or(1),
-    )?;
+    keys::write_identity_file(&new_main_path, &new_main_secret, None)?;
 
     let refreshed = load_backup_data(&layout, &data_key)?;
     write_backup(
@@ -455,91 +280,93 @@ pub fn rotate(config: &Config) -> Result<(), CliError> {
     )?;
 
     let _ = crate::agent::lock();
-
-    println!("Rotation complete. Save the new seeds:");
-    println!("Primary: {}", new_primary.expose_secret());
-    println!("Backup:  {}", new_backup.expose_secret());
-    println!("Run `nvlt snapshot export` before publishing to git if you use snapshots.");
-    Ok(())
-}
-
-fn prompt_totp_seed(prompt: &str) -> Result<SecretString, CliError> {
-    let seed = rpassword::prompt_password(prompt).map_err(CliError::Io)?;
-    Ok(SecretString::new(seed.trim().to_string()))
-}
-
-fn prompt_new_password_for_unlock() -> Result<SecretString, CliError> {
-    let password = rpassword::prompt_password("Master password: ").map_err(CliError::Io)?;
-    Ok(SecretString::new(password))
-}
-
-fn verify_totp_setup(label: &str, seed: &SecretString) -> Result<(), CliError> {
+    println!("Recovery complete. The old main key no longer opens the vault.");
     println!(
-        "Verify {label}: scan the QR above or enter the seed in your app, \
-         then type the 6-digit code from the app (not from vault)."
+        "New main unlock key: {}  ({new_main_public})",
+        new_main_path.display()
     );
-    let entered =
-        rpassword::prompt_password("Authenticator code (6 digits): ").map_err(CliError::Io)?;
-    if !verify_totp(seed, entered.trim())? {
-        return Err(CliError::TotpSetupVerifyFailed {
-            label: label.to_string(),
-        });
-    }
-    println!("{label} authenticator verified.");
     Ok(())
 }
 
-fn setup_and_verify_authenticator(
-    label: &str,
-    seed: &SecretString,
-    layout: &VaultLayout,
-) -> Result<(), CliError> {
-    println!();
-    println!("== {label} authenticator ==");
-    println!("Generating {label} otpauth URI and terminal QR...");
-    fs::create_dir_all(&layout.root)?;
+pub fn rotate(config: &Config) -> Result<(), CliError> {
+    let layout = VaultLayout::from_config(config);
+    confirm_or_cancel(
+        "⚠️  You are about to rotate your credentials.\n\
+            This re-encrypts all vault files and can change your master password and unlock keys.\n\
+            Old credentials will no longer work.\n\
+         \n\
+            Continue? [y/N]: ",
+    )?;
 
-    let uri = otpauth_uri_for_vault_seed(label, seed)?;
+    let session = UnlockSession::unlock_interactive(config, &layout)?;
 
-    println!("Save this {label} seed offline after you verify it:");
-    println!("{}", seed.expose_secret());
-    println!();
-    println!("{label} otpauth URI (manual entry):");
-    println!("{uri}");
-    println!();
-    println!("{label} QR (scan with your app):");
-    println!("{}", vault_totp::qr_ascii(&uri)?);
-    println!();
-
-    verify_totp_setup(label, seed)
-}
-
-fn otpauth_uri_for_vault_seed(account: &str, seed: &SecretString) -> Result<String, CliError> {
-    let secret = Secret::Encoded(seed.expose_secret().to_string())
-        .to_bytes()
-        .map_err(|_| CliError::Config("invalid generated TOTP seed".into()))?;
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        0,
-        30,
-        secret,
-        Some("Vault".into()),
-        account.into(),
-    )
-    .map_err(|_| CliError::Config("invalid generated TOTP seed".into()))?;
-    Ok(totp.get_url())
-}
-
-fn generate_totp_seed() -> SecretString {
-    let encoded = match Secret::generate_secret().to_encoded() {
-        Secret::Encoded(s) => s,
-        Secret::Raw(raw) => match Secret::Raw(raw).to_encoded() {
-            Secret::Encoded(s) => s,
-            Secret::Raw(_) => String::new(),
-        },
+    let new_password = if confirm("Change master password? [y/N]: ")? {
+        prompt_new_password()?
+    } else {
+        session.password.clone()
     };
-    SecretString::new(encoded)
+
+    let (main_secret, new_main_path) = if confirm("Generate a new main unlock key? [y/N]: ")? {
+        let (secret, public) = generate_identity()?;
+        let path = keys::prompt_key_path("New main unlock key file path: ")?;
+        keys::warn_key_custody(&layout, &path);
+        keys::write_identity_file(&path, &secret, None)?;
+        println!("New main unlock key: {}  ({public})", path.display());
+        (secret, Some(path))
+    } else {
+        (session.key_secret.clone(), None)
+    };
+
+    let (backup_secret, new_backup_path) = if confirm("Generate a new backup unlock key? [y/N]: ")?
+    {
+        let (secret, public) = generate_identity()?;
+        let path = keys::prompt_key_path("New backup unlock key file path: ")?;
+        keys::warn_key_custody(&layout, &path);
+        keys::write_identity_file(&path, &secret, None)?;
+        println!("New backup unlock key: {}  ({public})", path.display());
+        (secret, Some(path))
+    } else {
+        let path = keys::prompt_key_path("Current backup key file path: ")?;
+        keys::warn_key_custody(&layout, &path);
+        (keys::load_identity_checked(&path)?, None)
+    };
+
+    let salt = vault_salt(config)?;
+    let params = config.kdf.to_kdf_params();
+    let data_key = derive_key(&new_password, &main_secret, &salt, params)?;
+    let backup_key = derive_key(&new_password, &backup_secret, &salt, params)?;
+
+    let snapshot = load_backup_data(&layout, &session.data_key)?;
+    restore_backup_data(&layout, &data_key, snapshot)?;
+    re_encrypt_ssh_store(&layout, &session.data_key, &data_key)?;
+
+    let refreshed = load_backup_data(&layout, &data_key)?;
+    write_backup(
+        &BackupPayload {
+            version: BACKUP_VERSION,
+            data: refreshed,
+            created_at: Utc::now(),
+        },
+        &backup_key,
+        &layout,
+    )?;
+
+    let _ = crate::agent::lock();
+    println!("Rotation complete.");
+    if new_main_path.is_none() && new_backup_path.is_none() {
+        println!("Reuse your existing main and backup key files with the new credentials.");
+    }
+    println!("Store the backup key strictly offline; old credentials no longer work.");
+    Ok(())
+}
+
+fn vault_has_ciphertext(layout: &VaultLayout) -> bool {
+    layout.passwords.is_file()
+        || layout.totp.is_file()
+        || layout.backup.is_file()
+        || layout.ssh.is_file()
+        || layout.envs_dir.is_dir()
+        || layout.files_dir.is_dir()
 }
 
 fn empty_backup_data() -> BackupData {
@@ -603,7 +430,9 @@ fn re_encrypt_ssh_store(
         return Ok(());
     }
     let store = SshStore::load_path(old_key, &layout.ssh).map_err(CliError::from)?;
-    store.save_path(new_key, &layout.ssh).map_err(CliError::from)
+    store
+        .save_path(new_key, &layout.ssh)
+        .map_err(CliError::from)
 }
 
 fn reset_ssh_store(layout: &VaultLayout, data_key: &SecretString) -> Result<(), CliError> {
@@ -685,51 +514,56 @@ mod tests {
         let mut config = Config::default();
         config.vault.path = root.to_path_buf();
         config.vault.lock = Some("test-lock-for-unit-tests".into());
-        config.vault.device_id = Some(crate::device::compute_device_id().unwrap());
         config.kdf.memory_cost = 256;
         config.kdf.time_cost = 1;
         config.kdf.parallelism = 1;
         config
     }
 
+    fn secrets() -> (SecretString, SecretString, SecretString) {
+        (
+            SecretString::new("master-pass".into()),
+            SecretString::new("AGE-SECRET-KEY-1TESTMAINKEY".into()),
+            SecretString::new("AGE-SECRET-KEY-1TESTBACKUPKEY".into()),
+        )
+    }
+
     #[test]
-    fn init_writes_decryptable_stores_and_nvlt_enc() {
+    fn init_writes_decryptable_stores_without_rate_dir() {
         let root = std::env::temp_dir().join(format!("vault-init-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let mut config = test_config(&root);
         let layout = VaultLayout::from_config(&config);
 
-        let password = SecretString::new("init-pass".into());
-        let primary = SecretString::new("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into());
-        let backup = SecretString::new("MFRGGZDFMZTWQ2LKMFRGGZDFMZTWQ2LK".into());
-        init_with_secrets(&mut config, &password, &primary, &backup).unwrap();
+        let (password, main_secret, backup_secret) = secrets();
+        init_with_secrets(&mut config, &password, &main_secret, &backup_secret).unwrap();
 
         assert!(layout.passwords.is_file());
-        assert!(layout.has_rate_duplas());
+        assert!(layout.backup.is_file());
+        assert!(!layout.root.join("rate").exists());
+        assert!(!layout.legacy_nvlt_enc().exists());
 
         let salt = salt_from_lock(config.lock_str().unwrap()).unwrap();
         let data_key =
-            vault_core::derive_key(&password, &primary, &salt, config.kdf.to_kdf_params()).unwrap();
+            derive_key(&password, &main_secret, &salt, config.kdf.to_kdf_params()).unwrap();
         PasswordStore::load_path(&data_key, &layout.passwords).unwrap();
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn backup_then_recover_with_new_primary() {
+    fn backup_then_recover_with_new_main_key() {
         let root = std::env::temp_dir().join(format!("vault-life-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let mut config = test_config(&root);
         let layout = VaultLayout::from_config(&config);
 
-        let password = SecretString::new("master-pass".into());
-        let primary = SecretString::new("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into());
-        let backup = SecretString::new("MFRGGZDFMZTWQ2LKMFRGGZDFMZTWQ2LK".into());
-        init_with_secrets(&mut config, &password, &primary, &backup).unwrap();
+        let (password, main_secret, backup_secret) = secrets();
+        init_with_secrets(&mut config, &password, &main_secret, &backup_secret).unwrap();
 
         let salt = salt_from_lock(config.lock_str().unwrap()).unwrap();
-        let data_key =
-            vault_core::derive_key(&password, &primary, &salt, config.kdf.to_kdf_params()).unwrap();
+        let params = config.kdf.to_kdf_params();
+        let data_key = derive_key(&password, &main_secret, &salt, params).unwrap();
         let mut store = PasswordStore::load_path(&data_key, &layout.passwords).unwrap();
         store
             .add(NewEntry {
@@ -744,8 +578,7 @@ mod tests {
         store.save_path(&data_key, &layout.passwords).unwrap();
 
         let snapshot = load_backup_data(&layout, &data_key).unwrap();
-        let backup_key =
-            vault_core::derive_key(&password, &backup, &salt, config.kdf.to_kdf_params()).unwrap();
+        let backup_key = derive_key(&password, &backup_secret, &salt, params).unwrap();
         write_backup(
             &BackupPayload {
                 version: BACKUP_VERSION,
@@ -757,22 +590,10 @@ mod tests {
         )
         .unwrap();
 
-        let new_primary = generate_totp_seed();
+        let new_main = SecretString::new("AGE-SECRET-KEY-1ROTATEDMAINKEY".into());
         let payload = read_backup(&layout, &backup_key).unwrap();
-        let new_data_key =
-            vault_core::derive_key(&password, &new_primary, &salt, config.kdf.to_kdf_params())
-                .unwrap();
+        let new_data_key = derive_key(&password, &new_main, &salt, params).unwrap();
         restore_backup_data(&layout, &new_data_key, payload.data).unwrap();
-        let kdf_params = config.kdf.to_kdf_params();
-        remint_with_new_keypair(
-            &mut config,
-            &layout,
-            &password,
-            &new_primary,
-            &backup,
-            kdf_params,
-        )
-        .unwrap();
 
         let unlocked = PasswordStore::load_path(&new_data_key, &layout.passwords).unwrap();
         assert_eq!(
@@ -784,21 +605,18 @@ mod tests {
     }
 
     #[test]
-    fn rotate_reencrypts_data_and_nvlt_enc() {
+    fn rotate_reencrypts_data_and_backup() {
         let root = std::env::temp_dir().join(format!("vault-rotate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let mut config = test_config(&root);
         let layout = VaultLayout::from_config(&config);
 
-        let old_password = SecretString::new("master-pass".into());
-        let old_primary = SecretString::new("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into());
-        let old_backup = SecretString::new("MFRGGZDFMZTWQ2LKMFRGGZDFMZTWQ2LK".into());
-        init_with_secrets(&mut config, &old_password, &old_primary, &old_backup).unwrap();
+        let (old_password, old_main, old_backup) = secrets();
+        init_with_secrets(&mut config, &old_password, &old_main, &old_backup).unwrap();
 
         let salt = salt_from_lock(config.lock_str().unwrap()).unwrap();
         let params = config.kdf.to_kdf_params();
-        let old_data_key =
-            vault_core::derive_key(&old_password, &old_primary, &salt, params).unwrap();
+        let old_data_key = derive_key(&old_password, &old_main, &salt, params).unwrap();
 
         let mut store = PasswordStore::load_path(&old_data_key, &layout.passwords).unwrap();
         store
@@ -827,31 +645,16 @@ mod tests {
 
         let snapshot = load_backup_data(&layout, &old_data_key).unwrap();
         let new_password = SecretString::new("new-master".into());
-        let new_primary = generate_totp_seed();
-        let new_backup = generate_totp_seed();
-        let new_data_key =
-            vault_core::derive_key(&new_password, &new_primary, &salt, params).unwrap();
-        let new_backup_key =
-            vault_core::derive_key(&new_password, &new_backup, &salt, params).unwrap();
+        let new_main = SecretString::new("AGE-SECRET-KEY-1NEWMAINKEY".into());
+        let new_backup = SecretString::new("AGE-SECRET-KEY-1NEWBACKUPKEY".into());
+        let new_data_key = derive_key(&new_password, &new_main, &salt, params).unwrap();
+        let new_backup_key = derive_key(&new_password, &new_backup, &salt, params).unwrap();
 
         restore_backup_data(&layout, &new_data_key, snapshot).unwrap();
         re_encrypt_ssh_store(&layout, &old_data_key, &new_data_key).unwrap();
-        let params = config.kdf.to_kdf_params();
-        remint_with_new_keypair(
-            &mut config,
-            &layout,
-            &new_password,
-            &new_primary,
-            &new_backup,
-            params,
-        )
-        .unwrap();
 
         let loaded = PasswordStore::load_path(&new_data_key, &layout.passwords).unwrap();
-        assert_eq!(
-            loaded.get("rotate.test", "me").unwrap().password,
-            "pw"
-        );
+        assert_eq!(loaded.get("rotate.test", "me").unwrap().password, "pw");
         let ssh_loaded = SshStore::load_path(&new_data_key, &layout.ssh).unwrap();
         assert!(ssh_loaded.list().any(|e| e.name == "testkey"));
 

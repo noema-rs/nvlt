@@ -22,4 +22,7 @@ pub enum Error {
 
     #[error("invalid vault lock")]
     InvalidLock,
+
+    #[error("invalid or unreadable key file")]
+    KeyFile,
 }

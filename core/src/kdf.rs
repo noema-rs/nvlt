@@ -2,17 +2,16 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString},
     Argon2, Params, Version,
 };
-use rand::rngs::OsRng;
 use secrecy::{ExposeSecret, SecretString};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::error::Error;
-use crate::secrets::composite_passphrase;
 
 /// Argon2id cost parameters (defaults match vault-config spec).
 #[derive(Debug, Clone, Copy)]
 pub struct KdfParams {
-    /// Memory cost in KiB (65536 = 64 MiB).
+    /// Memory cost in KiB (262144 = 256 MiB).
     pub memory_cost_kib: u32,
     pub time_cost: u32,
     pub parallelism: u32,
@@ -21,8 +20,8 @@ pub struct KdfParams {
 impl Default for KdfParams {
     fn default() -> Self {
         Self {
-            memory_cost_kib: 65536,
-            time_cost: 3,
+            memory_cost_kib: 262144,
+            time_cost: 4,
             parallelism: 4,
         }
     }
@@ -50,34 +49,29 @@ impl KdfParams {
     }
 }
 
-/// Derive a 32-byte key and return it hex-encoded in a `SecretString`.
+/// Derive the vault data key through the v2 KDF chain.
+///
+/// The key layer is hardened first (`key_secret` + salt), then the password
+/// layer is applied over its output, so both the master password and the
+/// private key file are required.
 pub fn derive_key(
     password: &SecretString,
-    seed: &SecretString,
+    key_secret: &SecretString,
     salt: &[u8],
     params: KdfParams,
 ) -> Result<SecretString, Error> {
-    let composite = composite_passphrase(password, seed);
-    let mut material = composite.expose_secret().clone();
-    let result = derive_key_from_material(&material, salt, params);
-    material.zeroize();
-    result
-}
+    let key_layer = derive_key_from_material(key_secret, salt, params)?;
 
-/// Derive a wrap key from master password only (for `nvlt.enc` seed blobs).
-pub fn derive_wrap_key(
-    password: &SecretString,
-    salt: &[u8],
-    params: KdfParams,
-) -> Result<SecretString, Error> {
-    let mut material = password.expose_secret().clone();
-    let result = derive_key_from_material(&material, salt, params);
-    material.zeroize();
-    result
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(key_layer.expose_secret().as_bytes());
+    let digest = hasher.finalize();
+
+    derive_key_from_material(password, &digest[..16], params)
 }
 
 fn derive_key_from_material(
-    material: &str,
+    material: &SecretString,
     salt: &[u8],
     params: KdfParams,
 ) -> Result<SecretString, Error> {
@@ -86,7 +80,7 @@ fn derive_key_from_material(
 
     let salt_string = SaltString::encode_b64(salt).map_err(|_| Error::Kdf)?;
     let hash = argon2
-        .hash_password(material.as_bytes(), &salt_string)
+        .hash_password(material.expose_secret().as_bytes(), &salt_string)
         .map_err(|_| Error::Kdf)?;
 
     let hash_bytes = hash.hash.ok_or(Error::Kdf)?;
@@ -101,14 +95,6 @@ fn derive_key_from_material(
     Ok(secret)
 }
 
-/// Generate a random 16-byte salt suitable for `salt.bin` (used by vault init in a later change).
-#[allow(dead_code)]
-pub fn generate_salt() -> [u8; 16] {
-    let mut salt = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut OsRng, &mut salt);
-    salt
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,30 +104,33 @@ mod tests {
         *b"vault-test-salt!"
     }
 
+    fn key_secret() -> SecretString {
+        SecretString::new("AGE-SECRET-KEY-1TESTSECRET".to_string())
+    }
+
     #[test]
     fn kdf_is_deterministic() {
         let password = SecretString::new("master-password".to_string());
-        let seed = SecretString::new("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".to_string());
         let params = KdfParams::fast_test();
         let salt = sample_salt();
 
-        let a = derive_key(&password, &seed, &salt, params).unwrap();
-        let b = derive_key(&password, &seed, &salt, params).unwrap();
+        let a = derive_key(&password, &key_secret(), &salt, params).unwrap();
+        let b = derive_key(&password, &key_secret(), &salt, params).unwrap();
         assert_eq!(a.expose_secret(), b.expose_secret());
     }
 
     #[test]
-    fn kdf_differs_when_password_or_seed_changes() {
+    fn kdf_differs_when_password_or_key_changes() {
         let password_a = SecretString::new("password-a".to_string());
         let password_b = SecretString::new("password-b".to_string());
-        let seed_a = SecretString::new("JBSWY3DPEHPK3PXP".to_string());
-        let seed_b = SecretString::new("KRSXG5CTMVRXEZLU".to_string());
+        let key_a = SecretString::new("AGE-SECRET-KEY-1AAAA".to_string());
+        let key_b = SecretString::new("AGE-SECRET-KEY-1BBBB".to_string());
         let params = KdfParams::fast_test();
         let salt = sample_salt();
 
-        let key_aa = derive_key(&password_a, &seed_a, &salt, params).unwrap();
-        let key_ab = derive_key(&password_a, &seed_b, &salt, params).unwrap();
-        let key_ba = derive_key(&password_b, &seed_a, &salt, params).unwrap();
+        let key_aa = derive_key(&password_a, &key_a, &salt, params).unwrap();
+        let key_ab = derive_key(&password_a, &key_b, &salt, params).unwrap();
+        let key_ba = derive_key(&password_b, &key_a, &salt, params).unwrap();
 
         assert_ne!(key_aa.expose_secret(), key_ab.expose_secret());
         assert_ne!(key_aa.expose_secret(), key_ba.expose_secret());

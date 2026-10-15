@@ -10,26 +10,9 @@ pub enum CliError {
 
     #[error(
         "vault already initialized at {vault_root}. \
-         Use `nvlt init --from-snapshot` or `snapshot import`, or recover from backup."
+         Use `nvlt system init --from-snapshot` or `nvlt system snapshot import`, or `nvlt system recover`."
     )]
     AlreadyInitialized { vault_root: std::path::PathBuf },
-
-    #[error("unlock cancelled")]
-    UnlockCancelled,
-
-    #[error(
-        "device fingerprint mismatch; local vault files were wiped. \
-         Restore with `nvlt init --from-snapshot` or your offline recovery bundle."
-    )]
-    DeviceMismatch,
-
-    #[error(
-        "no valid rate-limit tokens remain; run `nvlt rate-limit renew` with offline bundle and rate-limit key"
-    )]
-    RateLimitExhausted,
-
-    #[error("TOTP setup verification failed for {label}; check the seed/QR and your authenticator app")]
-    TotpSetupVerifyFailed { label: String },
 
     #[error("operation cancelled")]
     Cancelled,

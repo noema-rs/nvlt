@@ -1,111 +1,96 @@
 ## Purpose
 
-Covers vault initialization, status, backup, recovery, and credential rotation with distinct data and backup keys.
+Covers vault initialization, status, backup, recovery, and credential rotation with main and backup unlock keys.
 ## Requirements
 ### Requirement: Initialize new vault
-The system SHALL create empty encrypted stores (`pass.age`, `envs/`, `files/`, `totp.age`), empty `backup.age`, a new random `lock` value in config, device fingerprint, rate-limit public key and generation, fifteen rate duplas under `rate/` holding verified primary and backup TOTP seeds, and offline recovery bundle output for the user. Init SHALL verify both authenticators with 6-digit codes before writing encrypted data.
+The system SHALL create empty encrypted stores (`pass.age`, `envs/`, `files/`, `totp.age`), empty `backup.age`, and a new random `lock` value in config. Init SHALL generate a main unlock keypair and a backup unlock keypair (age X25519), prompt visibly for a main key file path and a backup key file path, write both key files with private filesystem permissions on Unix, and print offline-storage instructions requiring the backup key to be stored strictly off the machine. Init SHALL NOT mint rate duplas, device registration material, a recovery bundle, or any auth TOTP seeds.
 
 #### Scenario: Init
 - **WHEN** init completes successfully
-- **THEN** all paths exist under the configured vault directory, `lock` is set, rate duplas exist, and no plaintext TOTP seeds are written to disk except optional QR or display during setup
-
-#### Scenario: Init QR outputs
-- **WHEN** init completes successfully
-- **THEN** the CLI MAY write QR PNGs under the vault root for scanning into an authenticator app
-
-#### Scenario: Init TOTP verification
-- **WHEN** init is setting up authenticators
-- **THEN** the CLI generates or accepts primary material, verifies the user’s app code, then does the same for backup before creating encrypted vault files and rate duplas
+- **THEN** all stores exist under the configured vault directory, `lock` is set, both key files exist at the prompted paths, no `rate/` directory exists, and no recovery bundle is produced
 
 #### Scenario: Init progress feedback
 - **WHEN** init is running setup steps
 - **THEN** the CLI prints short status lines so the user knows what is in progress
 
-#### Scenario: Init ASCII QR
-- **WHEN** init displays setup material for primary and backup seeds
-- **THEN** the CLI MAY print otpauth URIs and ASCII QR codes in the terminal
-
-#### Scenario: Init blocked when salt exists
-- **WHEN** `init` is invoked without `--from-snapshot` and the vault is already initialized (for example `lock` is set and core stores exist)
-- **THEN** init fails with a message that names the vault path and warns that re-init causes data loss without password, seeds, or backup, and directs the user to `init --from-snapshot` or recover
+#### Scenario: Init backup key instructions
+- **WHEN** init completes successfully
+- **THEN** the output instructs the user to store the backup key strictly offline and states that it is required for `backup` and `recover`
 
 #### Scenario: Init blocked when vault exists
-- **WHEN** `init` is invoked without `--from-snapshot` and encrypted stores already exist under the configured vault root
+- **WHEN** `nvlt system init` is invoked without `--from-snapshot` and the vault is already initialized (for example `lock` is set and core stores exist)
+- **THEN** init fails with a message that names the vault path and warns that re-init causes data loss without password, keys, or backup, and directs the user to `init --from-snapshot` or recover
+
+#### Scenario: Init blocked when ciphertext exists
+- **WHEN** `nvlt system init` is invoked without `--from-snapshot` and encrypted stores already exist under the configured vault root
 - **THEN** init fails and does not overwrite existing ciphertext
 
 ### Requirement: Backup sync
-The system SHALL decrypt all data-key-protected content and re-encrypt a copy into `backup.age` using the backup-derived key, without including TOTP seeds in the backup payload. Backup SHALL load the backup seed from rate duplas after master password unlock and backup TOTP code verification, not by prompting for seed text.
+The system SHALL decrypt all data-key-protected content and re-encrypt a copy into `backup.age` using a key derived from the backup unlock key through the KDF chain with the master password, without including unlock key material in the backup payload. Backup SHALL prompt for the master password and for the backup key file path (visible prompt), never for pasted key bytes.
 
 #### Scenario: Backup overwrite
 - **WHEN** backup runs
 - **THEN** the user confirms overwrite of existing `backup.age` before write
 
-#### Scenario: Backup code only
-- **WHEN** backup requires the backup factor
-- **THEN** the user supplies the 6-digit backup authenticator code, not the backup seed string
+#### Scenario: Backup authorized by backup key
+- **WHEN** backup runs with the wrong backup key file or a wrong master password
+- **THEN** no `backup.age` is written
 
 ### Requirement: Recover from backup
-The system SHALL restore data from `backup.age` using password and backup TOTP verification, generate a new primary TOTP seed, re-encrypt all data files with the new data key, remint rate duplas, and warn that the old primary seed is discarded.
+The system SHALL restore data from `backup.age` using the master password and the backup unlock key, MAY issue a new main unlock key to replace a lost or compromised one, re-encrypt all data files under the restored or new data key, and invalidate the old main key.
 
 #### Scenario: Recover confirmation
 - **WHEN** recover is invoked
 - **THEN** the user confirms replacement of current vault files before proceeding
 
+#### Scenario: Recover issues new main key
+- **WHEN** recover completes with a newly issued main unlock key
+- **THEN** the old main key no longer opens the vault and the new key file path is prompted visibly
+
 ### Requirement: Rotate credentials
-The system SHALL optionally change master password and SHALL generate new primary and backup TOTP seeds, re-encrypt all vault files and backup, remint rate duplas, and invalidate old credentials after confirmed rotation.
+The system SHALL optionally change the master password and SHALL optionally generate new main and/or new backup unlock keys, re-encrypt all vault files and backup, and invalidate old credentials after confirmed rotation.
 
 #### Scenario: Rotate
 - **WHEN** rotation completes
-- **THEN** unlock with old password or old seeds fails and new seeds are shown once for the user to save in their authenticator apps
+- **THEN** unlock with the old password or old key files fails, and any newly generated key files exist only at the visibly prompted paths
 
 ### Requirement: Unlock flow for daily use
-Each command that accesses encrypted data SHALL verify device binding, validate the lowest available rate dupla, prompt for master password and primary TOTP code unless a valid agent session exists, unwrap seeds from the paired slot `.enc`, verify the code, derive the data key using salt from `lock`, re-wrap the slot `.enc` after successful seed use, and clear secrets when finished. Any failed password, TOTP, or vault decrypt after selecting a slot SHALL invalidate that slot’s `.rt`.
+Each command that accesses encrypted data SHALL prompt for the master password (hidden) and the unlock key path (visible) unless a valid agent session exists, derive the data key through the KDF chain using salt from `lock`, apply the key custody warning when the key path is under the vault root or on the vault filesystem, and clear secrets when finished. Failed password, key, or vault decrypt attempts SHALL NOT expose plaintext and SHALL NOT modify vault ciphertext.
 
 #### Scenario: Failed unlock
-- **WHEN** password or TOTP verification fails after a rate slot was consumed for the attempt
-- **THEN** no plaintext vault content is exposed, the slot `.rt` is invalidated, and other vault ciphertext files are not modified except the invalidated rate artifacts
+- **WHEN** the master password, the key file content, or the key passphrase is wrong
+- **THEN** no plaintext vault content is exposed and no vault ciphertext files are modified
 
-#### Scenario: No seed text prompt on unlock
-- **WHEN** unlock runs and rate duplas are present
-- **THEN** the CLI does not ask for the primary seed string
+#### Scenario: No auto-discovery
+- **WHEN** unlock runs without a valid agent session
+- **THEN** the key path is prompted visibly every time and is never inferred from config or previous use
+
+#### Scenario: Prompts only on first unlock
+- **WHEN** a valid agent session exists
+- **THEN** the password and key path prompts are skipped until idle timeout or `nvlt lock`
 
 ### Requirement: Init from snapshot
-The CLI SHALL support `nvlt init --from-snapshot --path <directory>` with optional `--identity <path>` to the sync age private key (default `{path}/.nvlt-sync/host.key`). The command SHALL prompt for the sync host passphrase, decrypt and extract the snapshot into the vault root, reload configuration including `lock`, then prompt for vault master password, primary and backup TOTP seeds, and 6-digit codes, verify decrypt of existing ciphertext, and mint new device binding and rate duplas for this host.
+The CLI SHALL support `nvlt system init --from-snapshot --path <directory>` with optional `--identity <path>` to the sync age private key (default `{path}/.nvlt-sync/host.key`). The command SHALL prompt for the sync host passphrase, decrypt and extract the snapshot into the vault root, reload configuration including `lock`, then prompt for the vault master password and the main unlock key path (visible), and verify decrypt of existing ciphertext before declaring the vault initialized. Snapshot import SHALL NOT create device binding material or rate artifacts, and SHALL NOT generate a new main key silently.
 
 #### Scenario: New machine bootstrap
-- **WHEN** the user runs `init --from-snapshot` with valid snapshot and vault credentials
-- **THEN** vault files and rate duplas exist locally and unlock succeeds
+- **WHEN** the user runs `init --from-snapshot` with valid snapshot, master password, and main unlock key
+- **THEN** vault files exist locally and unlock succeeds
 
 #### Scenario: Missing identity
 - **WHEN** the sync private key is missing at the resolved identity path
 - **THEN** the command fails with a clear error and does not generate a new sync keypair
 
 #### Scenario: Failed proof decrypt
-- **WHEN** vault credentials do not decrypt imported ciphertext
-- **THEN** the command fails, does not write rate duplas, and leaves imported files unchanged unless extraction already completed (user must re-import)
-
-#### Scenario: Replace rate duplas
-- **WHEN** rate duplas already exist
-- **THEN** the user MUST confirm before replacing them after successful proof decrypt
+- **WHEN** the master password and main unlock key do not decrypt imported ciphertext
+- **THEN** the command fails, does not modify imported files beyond the completed extraction, and directs the user to recover with the backup key if the main key is lost
 
 #### Scenario: Missing config lock after extract
 - **WHEN** extracted `config.toml` has no `lock` field
-- **THEN** the command fails before minting rate duplas
-
-### Requirement: Reveal TOTP seed
-The CLI SHALL expose `nvlt reveal primary` and `nvlt reveal backup` which verify device binding and a valid rate dupla, accept master password and the corresponding 6-digit TOTP code, then print the seed or otpauth URI once to stdout after successful verification.
-
-#### Scenario: Reveal primary
-- **WHEN** `nvlt reveal primary` succeeds
-- **THEN** the seed or uri is printed to stdout and not written to disk by default
-
-#### Scenario: Reveal denied on bad code
-- **WHEN** the TOTP code does not match
-- **THEN** no seed material is printed and the rate slot used for the attempt is invalidated
+- **THEN** the command fails before declaring the vault initialized
 
 ### Requirement: Panic recovery path
-Documentation and command output SHALL state that after `nvlt panic` the user restores ciphertext via `snapshot import` or an existing tree, then runs `nvlt init --from-snapshot` with vault credentials and mints new local rate duplas; offline recovery bundle and rate-limit key remain the user's responsibility off the machine.
+Documentation and command output SHALL state that after `nvlt system panic` the user restores ciphertext via `snapshot import` or an existing tree, then runs `nvlt system init --from-snapshot` and unlocks with the master password and main unlock key (or recovers with the backup key if the main key is lost); the offline backup key remains the user's responsibility off the machine.
 
 #### Scenario: Documented flow
 - **WHEN** a user reads INIT.md lifecycle section for panic
-- **THEN** the from-snapshot path is described as the normal recovery after panic
+- **THEN** the from-snapshot path is described as the normal recovery after panic, with the backup key stored offline as the fallback

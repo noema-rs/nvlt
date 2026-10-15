@@ -1,10 +1,10 @@
 # vault-sync Specification
 
 ## Purpose
-Defines how nvlt packages vault ciphertext and configuration for a public or shared snapshot directory using an age-based outer layer distinct from vault KDF keys, without exposing local TOTP seed storage.
+Defines how nvlt packages vault ciphertext and configuration for a public or shared snapshot directory using an age-based outer layer distinct from vault KDF keys, without exposing local unlock key material.
 ## Requirements
 ### Requirement: Snapshot export and import
-The CLI SHALL expose `nvlt snapshot export --path <directory>` and `nvlt snapshot import --path <directory>` where `<directory>` is the snapshot root (for example a git clone). Export SHALL refresh the snapshot bundle after successfully completing a vault backup. Import SHALL decrypt the snapshot bundle and materialize vault files into the configured local vault root.
+The CLI SHALL expose `nvlt system snapshot export --path <directory>` and `nvlt system snapshot import --path <directory>` where `<directory>` is the snapshot root (for example a git clone). Export SHALL refresh the snapshot bundle after successfully completing a vault backup. Import SHALL decrypt the snapshot bundle and materialize vault files into the configured local vault root.
 
 #### Scenario: Path required
 - **WHEN** the user runs `snapshot export` or `snapshot import` without `--path`
@@ -12,11 +12,11 @@ The CLI SHALL expose `nvlt snapshot export --path <directory>` and `nvlt snapsho
 
 #### Scenario: Backup before export
 - **WHEN** `snapshot export --path` runs successfully
-- **THEN** the system refreshes `backup.age` using the same rules as `nvlt backup` before building the snapshot bundle
+- **THEN** the system refreshes `backup.age` using the same rules as `nvlt system backup` before building the snapshot bundle
 
 #### Scenario: Import materializes vault tree
 - **WHEN** `snapshot import --path` succeeds
-- **THEN** `config.toml` and all packed `.age` files exist under the local vault root and local rate duplas are not created or overwritten
+- **THEN** `config.toml` and all packed `.age` files exist under the local vault root and unlock key files are not created or overwritten
 
 #### Scenario: Import confirms overwrite
 - **WHEN** `snapshot import --path` would overwrite existing files under the local vault root
@@ -27,11 +27,11 @@ The CLI SHALL expose `nvlt snapshot export --path <directory>` and `nvlt snapsho
 - **THEN** import proceeds without an overwrite confirmation beyond any global snapshot warnings documented in vault-cli
 
 ### Requirement: Sync bundle contents
-The snapshot bundle SHALL contain the vault-local `config.toml` and every data `.age` file under the configured vault root (including `pass.age`, `totp.age`, `backup.age`, and encrypted files under `envs/` and `files/`). The bundle SHALL NOT contain the `rate/` directory, legacy `nvlt.enc`, plaintext TOTP seeds, or any on-disk salt file.
+The snapshot bundle SHALL contain the vault-local `config.toml` and every data `.age` file under the configured vault root (including `pass.age`, `totp.age`, `backup.age`, and encrypted files under `envs/` and `files/`). The bundle SHALL NOT contain unlock key files, the sync host private key, legacy `nvlt.enc`, or any on-disk salt file.
 
 #### Scenario: Local secrets excluded
 - **WHEN** export completes
-- **THEN** `rate/` duplas, legacy `nvlt.enc`, and any plaintext seed files are absent from the snapshot directory output
+- **THEN** unlock key files, the sync host private key, legacy `nvlt.enc`, and any salt file are absent from the snapshot directory output
 
 #### Scenario: Config travels inside bundle
 - **WHEN** a recipient decrypts the snapshot bundle via import
@@ -64,7 +64,7 @@ The system SHALL use an age X25519 keypair dedicated to snapshot transport. The 
 - **THEN** decryption of the host archive fails and no vault plaintext is returned
 
 ### Requirement: Sync host passphrase
-The system SHALL use a **sync host passphrase** distinct from the vault master password. Export SHALL prompt for this passphrase (or accept confirmation when re-exporting with an existing snapshot setup). Import SHALL prompt for the same passphrase. This passphrase SHALL NOT be used for vault KDF, local rate duplas, or unlocking the vault master secret.
+The system SHALL use a **sync host passphrase** distinct from the vault master password. Export SHALL prompt for this passphrase (or accept confirmation when re-exporting with an existing snapshot setup). Import SHALL prompt for the same passphrase. This passphrase SHALL NOT be used for vault KDF or for unlocking the vault.
 
 #### Scenario: Distinct from vault master password
 - **WHEN** export or import prompts for the sync host passphrase
@@ -87,8 +87,8 @@ The snapshot directory SHALL contain an outer ciphertext file (default `host.age
 
 #### Scenario: Public git safe ciphertext
 - **WHEN** only the host archive and plaintext public key file are published
-- **THEN** opening the bundle still requires the sync private key and sync host passphrase; vault TOTP seeds and local rate material remain absent from the snapshot directory
+- **THEN** opening the bundle still requires the sync private key and sync host passphrase; unlock key material and the sync host private key remain absent from the snapshot directory
 
 #### Scenario: Export and import round-trip
 - **WHEN** export then import runs with the same keys, sync host passphrase, and path on a confirmed or empty vault root
-- **THEN** recovered ciphertexts and config match the exported snapshot aside from local-only rate duplas
+- **THEN** recovered ciphertexts and config match the exported snapshot

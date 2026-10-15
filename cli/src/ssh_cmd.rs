@@ -31,7 +31,11 @@ fn load_store(session: &UnlockSession, layout: &VaultLayout) -> Result<SshStore,
     }
 }
 
-fn save_store(store: &SshStore, session: &UnlockSession, layout: &VaultLayout) -> Result<(), CliError> {
+fn save_store(
+    store: &SshStore,
+    session: &UnlockSession,
+    layout: &VaultLayout,
+) -> Result<(), CliError> {
     store
         .save_path(&session.data_key, &layout.ssh)
         .map_err(CliError::from)?;
@@ -131,9 +135,10 @@ pub fn open(config: &crate::config::Config, name: &str) -> Result<(), CliError> 
     let layout = VaultLayout::from_config(config);
     let session = UnlockSession::unlock_data_key(config, &layout)?;
     let store = load_store(&session, &layout)?;
-    let entry = store.list().find(|e| e.name == name).ok_or_else(|| {
-        CliError::Config(format!("SSH entry not found: {name}"))
-    })?;
+    let entry = store
+        .list()
+        .find(|e| e.name == name)
+        .ok_or_else(|| CliError::Config(format!("SSH entry not found: {name}")))?;
     let (priv_path, _) = key_paths(name);
     if let (Some(host), Some(user)) = (&entry.host, &entry.user) {
         println!("ssh -i {} {user}@{host}", priv_path.display());

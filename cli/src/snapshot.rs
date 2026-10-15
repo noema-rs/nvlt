@@ -6,7 +6,9 @@ use age::{Decryptor, Encryptor, Identity, Recipient};
 use age_core::secrecy::{ExposeSecret, SecretString as AgeSecretString};
 use tar::{Builder, EntryType, Header};
 
-use crate::config::{set_private_file_permissions, Config, VAULT_CONFIG_FILE};
+use crate::config::{
+    set_private_dir_permissions, set_private_file_permissions, Config, VAULT_CONFIG_FILE,
+};
 use crate::confirm::confirm_or_cancel;
 use crate::error::CliError;
 use crate::lifecycle;
@@ -20,16 +22,13 @@ fn snapshot_identity_path(snapshot_root: &Path) -> PathBuf {
 
 fn ensure_snapshot_identity(snapshot_root: &Path) -> Result<age::x25519::Identity, CliError> {
     fs::create_dir_all(snapshot_root.join(".nvlt-sync"))?;
-    set_private_file_permissions(&snapshot_root.join(".nvlt-sync"))?;
+    set_private_dir_permissions(&snapshot_root.join(".nvlt-sync"))?;
     let id_path = snapshot_identity_path(snapshot_root);
     if id_path.is_file() {
         return load_sync_identity_file(&id_path);
     }
     let identity = age::x25519::Identity::generate();
-    fs::write(
-        &id_path,
-        identity.to_string().expose_secret().as_bytes(),
-    )?;
+    fs::write(&id_path, identity.to_string().expose_secret().as_bytes())?;
     set_private_file_permissions(&id_path)?;
     Ok(identity)
 }
@@ -76,12 +75,13 @@ pub fn materialize_snapshot(
     }
     if vault_has_overwritable_files(&layout) {
         confirm_or_cancel(
-            "⚠️  Import will OVERWRITE existing vault files under the vault root (not nvlt.enc).\n\
+            "⚠️  Import will OVERWRITE existing vault files under the vault root.\n\
                 Continue? [y/N]: ",
         )?;
     }
 
-    let host_passphrase = rpassword::prompt_password("Sync host passphrase: ").map_err(CliError::Io)?;
+    let host_passphrase =
+        rpassword::prompt_password("Sync host passphrase: ").map_err(CliError::Io)?;
     let identity = load_sync_identity(snapshot_root, identity_file)?;
     let ciphertext = fs::read(&host_path)?;
     let plain = decrypt_host_archive(&ciphertext, &host_passphrase, &identity)?;
@@ -98,7 +98,10 @@ fn host_paths(config: &Config, snapshot_root: &Path) -> (PathBuf, PathBuf) {
     )
 }
 
-fn collect_vault_files(layout: &VaultLayout, config: &Config) -> Result<Vec<(String, PathBuf)>, CliError> {
+fn collect_vault_files(
+    layout: &VaultLayout,
+    config: &Config,
+) -> Result<Vec<(String, PathBuf)>, CliError> {
     let mut out = Vec::new();
     out.push((VAULT_CONFIG_FILE.to_string(), layout.config_file.clone()));
     if layout.ssh.is_file() {
@@ -161,7 +164,10 @@ fn build_tar(entries: &[(String, PathBuf)]) -> Result<Vec<u8>, CliError> {
     Ok(buf)
 }
 
-fn age_encrypt_to_recipient(plaintext: &[u8], recipient: &dyn Recipient) -> Result<Vec<u8>, CliError> {
+fn age_encrypt_to_recipient(
+    plaintext: &[u8],
+    recipient: &dyn Recipient,
+) -> Result<Vec<u8>, CliError> {
     let encryptor = Encryptor::with_recipients(std::iter::once(recipient))
         .map_err(|e| CliError::Config(e.to_string()))?;
     let mut encrypted = vec![];
@@ -178,8 +184,7 @@ fn age_encrypt_to_recipient(plaintext: &[u8], recipient: &dyn Recipient) -> Resu
 }
 
 fn age_encrypt_to_passphrase(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, CliError> {
-    let encryptor =
-        Encryptor::with_user_passphrase(AgeSecretString::from(passphrase.to_string()));
+    let encryptor = Encryptor::with_user_passphrase(AgeSecretString::from(passphrase.to_string()));
     let mut encrypted = vec![];
     let mut writer = encryptor
         .wrap_output(&mut encrypted)
@@ -222,10 +227,9 @@ fn decrypt_host_archive(
     host_passphrase: &str,
     identity: &age::x25519::Identity,
 ) -> Result<Vec<u8>, CliError> {
-    let mut pass_identity: Box<dyn Identity> =
-        Box::new(age::scrypt::Identity::new(AgeSecretString::from(
-            host_passphrase.to_string(),
-        )));
+    let mut pass_identity: Box<dyn Identity> = Box::new(age::scrypt::Identity::new(
+        AgeSecretString::from(host_passphrase.to_string()),
+    ));
     let middle = age_decrypt_layer(ciphertext, std::slice::from_mut(&mut pass_identity))?;
     let mut key_identity: Box<dyn Identity> = Box::new(identity.clone());
     age_decrypt_layer(&middle, std::slice::from_mut(&mut key_identity))
@@ -262,7 +266,8 @@ pub fn snapshot_export(config: &Config, snapshot_root: &Path) -> Result<(), CliE
     let recipient = identity.to_public();
     let (host_path, pub_path) = host_paths(config, snapshot_root);
 
-    let host_passphrase = rpassword::prompt_password("Sync host passphrase: ").map_err(CliError::Io)?;
+    let host_passphrase =
+        rpassword::prompt_password("Sync host passphrase: ").map_err(CliError::Io)?;
 
     let entries = collect_vault_files(&layout, config)?;
     let tar = build_tar(&entries)?;
@@ -285,18 +290,47 @@ pub fn snapshot_import(config: &Config, snapshot_root: &Path) -> Result<(), CliE
     let config = crate::config::load_config()?;
     let layout = VaultLayout::from_config(&config);
     println!("Import complete into {}", layout.root.display());
-    if !layout.has_rate_duplas() {
-        println!(
-            "Run `nvlt init --from-snapshot --path {}` to create local rate duplas.",
-            snapshot_root.display()
-        );
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ensure_snapshot_identity_creates_traversable_sync_dir() {
+        let dir = std::env::temp_dir().join(format!("nvlt-snap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let identity = ensure_snapshot_identity(&dir).unwrap();
+        let sync_dir = dir.join(".nvlt-sync");
+        let id_path = sync_dir.join(SYNC_IDENTITY_FILE);
+        assert!(id_path.is_file());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&sync_dir, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let reloaded = ensure_snapshot_identity(&dir).unwrap();
+        assert_eq!(
+            reloaded.to_public().to_string(),
+            identity.to_public().to_string()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = fs::metadata(&sync_dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(dir_mode, 0o700);
+            let file_mode = fs::metadata(&id_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600);
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn host_archive_round_trip() {

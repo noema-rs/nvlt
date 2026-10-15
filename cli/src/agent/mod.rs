@@ -40,7 +40,8 @@ pub fn ensure_running() -> Result<(), crate::error::CliError> {
         }
     }
     Err(crate::error::CliError::Config(
-        "vault agent failed to start (try: rm -rf ~/.cache/vault/agent and run unlock again)".into(),
+        "vault agent failed to start (try: rm -rf ~/.cache/vault/agent and run unlock again)"
+            .into(),
     ))
 }
 
