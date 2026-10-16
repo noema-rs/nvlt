@@ -59,6 +59,21 @@ impl FileVault {
             .and_then(|n| n.to_str())
             .ok_or(Error::InvalidSourcePath)?
             .to_string();
+        self.encrypt_file_as(source, &name, key, overwrite)
+    }
+
+    pub fn encrypt_file_as(
+        &self,
+        source: impl AsRef<Path>,
+        vault_name: &str,
+        key: &SecretString,
+        overwrite: OverwritePolicy,
+    ) -> Result<String, Error> {
+        let source = source.as_ref();
+        if vault_name.is_empty() || vault_name.contains('/') || vault_name.contains('\\') {
+            return Err(Error::InvalidVaultName);
+        }
+        let name = vault_name.to_string();
         let dest = self.stored_path(&name);
         if dest.exists() && overwrite == OverwritePolicy::RefuseIfExists {
             return Err(Error::AlreadyExists { name });

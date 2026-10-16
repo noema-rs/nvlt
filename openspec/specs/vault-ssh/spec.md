@@ -26,7 +26,7 @@ The CLI SHALL list registered SSH entries by name and SHALL allow removing an en
 - **THEN** the encrypted entry is deleted and any active installation for that name is deactivated first
 
 ### Requirement: Activate and deactivate in ssh directory
-The CLI SHALL support activating a registered name by writing or linking key files into `~/.ssh` with mode `600` for private keys and `644` for public keys, using deterministic filenames derived from the entry name unless configured otherwise. Deactivate SHALL remove only the paths recorded for that activation.
+The CLI SHALL support activating a registered name by writing key files into `~/.ssh` as `{name}` and `{name}.pub` (same basename as the vault entry name), with mode `600` for the private key and `644` for the public key. Deactivate SHALL remove only the paths recorded for that activation.
 
 #### Scenario: Activate installs keys
 - **WHEN** the user activates a registered name

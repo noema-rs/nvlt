@@ -3,7 +3,7 @@
 Describes configurable vault paths, KDF parameters, and where configuration files live on disk.
 ## Requirements
 ### Requirement: Vault path layout
-Configuration SHALL define vault root path and relative names for `pass.age`, `envs/`, `files/`, `totp.age`, and `backup.age`. Configuration SHALL include a string field `lock` used to derive the 16-byte KDF salt in memory on each operation. Configuration SHALL NOT include `device_id`, rate-limit fields, rate generation counters, or any `rate/` directory. Configuration SHALL NOT use a separate `salt.bin` file or any other persisted salt file. Configuration SHALL allow optional sync artifact basenames for the host archive and public key used by `snapshot export` and `snapshot import`.
+Configuration SHALL define vault root path and relative names for `pass.age`, `envs/`, `files/`, `totp.age`, and `backup.age`. Configuration SHALL include a string field `lock` used to derive the 16-byte KDF salt in memory on each operation. Configuration SHALL NOT include `device_id`, rate-limit fields, rate generation counters, or any `rate/` directory. Configuration SHALL NOT use a separate `salt.bin` file or any other persisted salt file. Configuration SHALL allow optional sync artifact basenames for the snapshot archive and public key used by `snapshot export` and `snapshot import` (defaults `user.age` and `user.pub`).
 
 #### Scenario: Default layout
 - **WHEN** no custom path is set

@@ -3,7 +3,7 @@
 Defines the user-facing CLI structure, confirmation UX, configuration commands, key custody prompts, session agent, and shell integration for `vault env load`.
 ## Requirements
 ### Requirement: Subcommand structure
-The binary **`nvlt`** SHALL expose lifecycle and admin commands under `system`: `init`, `status`, `backup`, `recover`, `rotate`, `snapshot` (with `export` and `import`), `panic`, and `config`. Data commands SHALL stay top level: `pass`, `env`, `files`, `totp`, `ssh`, `unlock`, `lock`, and `age` (the `agent` command stays hidden). `nvlt system init` SHALL accept `--from-snapshot --path` and optional `--identity` for bootstrapping from a host archive, and SHALL NOT expose `--migrate`. The CLI SHALL NOT provide a `help` subcommand: `--help` works on every command and a bare `nvlt` invocation prints the command list. The CLI SHALL NOT provide `reveal` or `rate-limit` commands. Documentation in INIT.md SHALL use the `nvlt` name and snapshot commands.
+The binary **`nvlt`** SHALL expose lifecycle and admin commands under `system`: `init`, `status`, `backup`, `recover`, `rotate`, `snapshot` (with `export` and `import`), `panic`, and `config`. Data commands SHALL stay top level: `pass`, `env`, `files`, `totp`, `ssh`, `unlock`, `lock`, and `age` (the `agent` command stays hidden). `nvlt system init --from-snapshot` SHALL accept an optional bundle directory argument and optional `--identity`, prompting interactively when omitted. Snapshot export/import SHALL accept an optional bundle directory argument and prompt for the sync identity key path. Sensitive file paths (snapshot bundle, sync identity, age input/output, unlock keys) SHALL be prompted interactively with visible echo when not passed as arguments, so secrets are less likely to appear in shell history. The CLI SHALL NOT expose `--migrate`. The CLI SHALL NOT provide a `help` subcommand: `--help` works on every command and a bare `nvlt` invocation prints the command list. The CLI SHALL NOT provide `reveal` or `rate-limit` commands. Documentation in INIT.md SHALL use the `nvlt` name and snapshot commands.
 
 #### Scenario: Init help
 - **WHEN** the user runs `nvlt system init --help`
@@ -80,11 +80,11 @@ The CLI binary SHALL present errors to users with readable diagnostics (miette-s
 - **THEN** the user sees a formatted error without secret values in the output
 
 ### Requirement: Snapshot CLI
-The CLI SHALL implement `nvlt system snapshot export --path <directory>` and `nvlt system snapshot import --path <directory>` as specified in vault-sync. Export SHALL run implicit backup, prompt for the sync host passphrase when building the host archive, and prompt for the backup key when backup runs. Import SHALL prompt for the sync host passphrase and SHALL confirm before overwriting existing vault files.
+The CLI SHALL implement `nvlt system snapshot export [directory]` and `nvlt system snapshot import [directory]` as specified in vault-sync. Export SHALL run implicit backup, prompt for bundle and identity paths when omitted, prompt for the sync host passphrase when building the archive, and prompt for the backup key when backup runs. Import SHALL prompt for the sync host passphrase and SHALL confirm before overwriting existing vault files.
 
 #### Scenario: Snapshot help
 - **WHEN** the user runs `nvlt system snapshot --help`
-- **THEN** `export` and `import` subcommands and required `--path` are listed
+- **THEN** `export` and `import` subcommands and optional directory arguments are listed
 
 #### Scenario: Import overwrite confirmation
 - **WHEN** import would overwrite files under the vault root

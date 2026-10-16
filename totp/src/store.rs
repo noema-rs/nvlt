@@ -55,39 +55,53 @@ impl TotpStore {
         self.document.entries.iter()
     }
 
-    pub fn get(&self, site: &str) -> Result<&TotpEntry, Error> {
-        self.find_index(site).map(|idx| &self.document.entries[idx])
+    pub fn get(&self, site: &str, account: &str) -> Result<&TotpEntry, Error> {
+        self.find_index(site, account)
+            .map(|idx| &self.document.entries[idx])
     }
 
     pub fn add(&mut self, entry: NewTotpEntry) -> Result<(), Error> {
-        if self.find_index(&entry.site).is_ok() {
-            return Err(Error::Duplicate { site: entry.site });
+        if self.find_index(&entry.site, &entry.account).is_ok() {
+            return Err(Error::Duplicate {
+                site: entry.site,
+                account: entry.account,
+            });
         }
         self.document.entries.push(entry.into_entry(Utc::now()));
         Ok(())
     }
 
-    pub fn prepare_remove(&self, site: &str) -> Result<RemoveConfirmation, Error> {
-        self.get(site)?;
-        Ok(remove_confirmation(site))
+    pub fn prepare_remove(&self, site: &str, account: &str) -> Result<RemoveConfirmation, Error> {
+        self.get(site, account)?;
+        Ok(remove_confirmation(site, account))
     }
 
-    pub fn remove(&mut self, site: &str) -> Result<(), Error> {
-        let idx = self.find_index(site)?;
+    pub fn remove(&mut self, site: &str, account: &str) -> Result<(), Error> {
+        let idx = self.find_index(site, account)?;
         self.document.entries.remove(idx);
         Ok(())
     }
 
-    pub fn export_uri_to_path(&self, site: &str, path: impl AsRef<Path>) -> Result<(), Error> {
-        let uri = self.get(site)?.otpauth_uri()?;
+    pub fn export_uri_to_path(
+        &self,
+        site: &str,
+        account: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<(), Error> {
+        let uri = self.get(site, account)?.otpauth_uri()?;
         std::fs::write(path, uri)?;
         Ok(())
     }
 
     /// Writes a PNG QR code when the path ends in `.png`; otherwise writes the otpauth URI as text.
-    pub fn export_to_path(&self, site: &str, path: impl AsRef<Path>) -> Result<(), Error> {
+    pub fn export_to_path(
+        &self,
+        site: &str,
+        account: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<(), Error> {
         let path = path.as_ref();
-        let uri = self.get(site)?.otpauth_uri()?;
+        let uri = self.get(site, account)?.otpauth_uri()?;
         if path
             .extension()
             .and_then(|e| e.to_str())
@@ -118,13 +132,14 @@ impl TotpStore {
         }
     }
 
-    fn find_index(&self, site: &str) -> Result<usize, Error> {
+    fn find_index(&self, site: &str, account: &str) -> Result<usize, Error> {
         self.document
             .entries
             .iter()
-            .position(|e| e.site == site)
+            .position(|e| e.site == site && e.account == account)
             .ok_or_else(|| Error::NotFound {
                 site: site.to_string(),
+                account: account.to_string(),
             })
     }
 }
@@ -163,7 +178,30 @@ mod tests {
 
         let blob = store.save_encrypted(&key).unwrap();
         let loaded = TotpStore::load_encrypted(&key, &blob).unwrap();
-        let entry = loaded.get("solo-2fa.com").unwrap();
+        let entry = loaded.get("solo-2fa.com", "user").unwrap();
         assert!(entry.current_code().unwrap().code.len() >= 6);
+    }
+
+    #[test]
+    fn same_site_multiple_accounts() {
+        let key = test_key();
+        let mut store = TotpStore::empty();
+        store
+            .add(default_entry(
+                "github.com",
+                "work",
+                "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            ))
+            .unwrap();
+        store
+            .add(default_entry(
+                "github.com",
+                "personal",
+                "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+            ))
+            .unwrap();
+        assert!(store.get("github.com", "work").is_ok());
+        assert!(store.get("github.com", "personal").is_ok());
+        let _ = store.save_encrypted(&key);
     }
 }

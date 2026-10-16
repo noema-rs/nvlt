@@ -15,12 +15,14 @@ fn ssh_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".ssh"))
 }
 
-fn key_paths(name: &str) -> (PathBuf, PathBuf) {
+fn key_paths(name: &str) -> Result<(PathBuf, PathBuf), CliError> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') {
+        return Err(CliError::Config(
+            "SSH entry name must be non-empty and must not contain path separators".into(),
+        ));
+    }
     let dir = ssh_dir();
-    (
-        dir.join(format!("nvlt_{name}")),
-        dir.join(format!("nvlt_{name}.pub")),
-    )
+    Ok((dir.join(name), dir.join(format!("{name}.pub"))))
 }
 
 fn load_store(session: &UnlockSession, layout: &VaultLayout) -> Result<SshStore, CliError> {
@@ -85,7 +87,7 @@ pub fn activate(config: &crate::config::Config, name: &str) -> Result<(), CliErr
     let layout = VaultLayout::from_config(config);
     let session = UnlockSession::unlock_data_key(config, &layout)?;
     let mut store = load_store(&session, &layout)?;
-    let (priv_path, pub_path) = key_paths(name);
+    let (priv_path, pub_path) = key_paths(name)?;
     fs::create_dir_all(ssh_dir())?;
     {
         let entry = store.get_mut(name)?;
@@ -139,7 +141,7 @@ pub fn open(config: &crate::config::Config, name: &str) -> Result<(), CliError> 
         .list()
         .find(|e| e.name == name)
         .ok_or_else(|| CliError::Config(format!("SSH entry not found: {name}")))?;
-    let (priv_path, _) = key_paths(name);
+    let (priv_path, _) = key_paths(name)?;
     if let (Some(host), Some(user)) = (&entry.host, &entry.user) {
         println!("ssh -i {} {user}@{host}", priv_path.display());
     } else {

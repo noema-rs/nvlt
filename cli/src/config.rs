@@ -149,10 +149,10 @@ fn default_backup_file() -> String {
     "backup.age".into()
 }
 fn default_sync_host_file() -> String {
-    "host.age".into()
+    "user.age".into()
 }
 fn default_sync_pub_file() -> String {
-    "host.pub".into()
+    "user.pub".into()
 }
 
 fn default_memory_cost() -> u32 {

@@ -2,11 +2,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("TOTP entry not found: {site}")]
-    NotFound { site: String },
+    #[error("TOTP entry not found: {site} ({account})")]
+    NotFound { site: String, account: String },
 
-    #[error("duplicate TOTP entry: {site}")]
-    Duplicate { site: String },
+    #[error("duplicate TOTP entry: {site} ({account})")]
+    Duplicate { site: String, account: String },
 
     #[error("invalid totp store file")]
     InvalidFile,

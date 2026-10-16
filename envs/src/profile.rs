@@ -116,6 +116,35 @@ pub struct EnvVault {
     dir: PathBuf,
 }
 
+fn parse_dotenv_lines(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line).trim();
+        let Some((key, rest)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let mut value = rest.trim().to_string();
+        if value.len() >= 2 {
+            let bytes = value.as_bytes();
+            if (bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+                || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\'')
+            {
+                value = value[1..value.len() - 1].to_string();
+            }
+        }
+        out.push((key.to_string(), value));
+    }
+    out
+}
+
 impl EnvVault {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
@@ -197,6 +226,25 @@ impl EnvVault {
         Ok(())
     }
 
+    /// Merge variables from a dotenv-style file (KEY=VALUE lines) into a profile.
+    pub fn import_dotenv_file(
+        &self,
+        profile: &str,
+        path: &Path,
+        key: &SecretString,
+    ) -> Result<(), Error> {
+        let text = std::fs::read_to_string(path)?;
+        let mut store = match self.load_profile(profile, key) {
+            Ok(s) => s,
+            Err(Error::ProfileNotFound { .. }) => ProfileStore::empty(profile),
+            Err(e) => return Err(e),
+        };
+        for (var_key, value) in parse_dotenv_lines(&text) {
+            store.set(var_key, value);
+        }
+        self.save_profile(&store, key)
+    }
+
     /// Load or create a profile, apply `set`, and persist.
     pub fn set_var(
         &self,
@@ -261,5 +309,17 @@ mod tests {
         assert!(vault.list_profiles().unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_dotenv_parses_export_lines() {
+        let parsed = parse_dotenv_lines("export FOO=bar\n# comment\nBAZ=\"qux\"\n");
+        assert_eq!(
+            parsed,
+            vec![
+                ("FOO".to_string(), "bar".to_string()),
+                ("BAZ".to_string(), "qux".to_string()),
+            ]
+        );
     }
 }
