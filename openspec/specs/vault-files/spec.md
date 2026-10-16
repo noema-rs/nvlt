@@ -5,14 +5,14 @@ Encrypts arbitrary user files into the vault `files/` store and decrypts them to
 ## Requirements
 
 ### Requirement: Encrypt to vault store
-The system SHALL read a user file, encrypt bytes with the data key, and store under `files/` using the source basename unless configured otherwise.
+The system SHALL read a user file, encrypt bytes with the data key, and store under `files/` under a user-chosen vault filename. When source path or vault name are omitted on the CLI, the command SHALL prompt for them interactively (echoed paths).
 
 #### Scenario: Encrypt confirmation
 - **WHEN** encrypt is invoked
 - **THEN** the user must confirm source path, destination in vault, and overwrite behavior if a name collision exists
 
 ### Requirement: Decrypt to path or stdout
-The system SHALL decrypt a stored file to a user-specified path or to stdout when requested.
+The system SHALL decrypt a stored file to a user-specified path or to stdout when requested. When output path is omitted and stdout is not requested, the CLI SHALL prompt for the output path interactively.
 
 #### Scenario: Decrypt overwrite
 - **WHEN** decrypt targets an existing path

@@ -11,6 +11,9 @@ pub enum Error {
     #[error("source path has no file name")]
     InvalidSourcePath,
 
+    #[error("invalid vault filename for files/")]
+    InvalidVaultName,
+
     #[error(transparent)]
     Core(#[from] vault_core::Error),
 

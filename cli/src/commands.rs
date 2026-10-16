@@ -77,10 +77,16 @@ pub enum FilesCmd {
     /// List encrypted filenames in the vault
     List,
     /// Encrypt a file into files/ (confirms overwrite)
-    Encrypt { path: PathBuf },
+    Encrypt {
+        /// Source file; prompted when omitted
+        path: Option<PathBuf>,
+        /// Stored vault filename; prompted when omitted
+        name: Option<String>,
+    },
     /// Decrypt to path or --stdout (confirms overwrite)
     Decrypt {
         name: String,
+        /// Output path; prompted when omitted (unless --stdout)
         output_path: Option<PathBuf>,
         #[arg(long)]
         stdout: bool,
@@ -302,10 +308,20 @@ pub fn run_files(cmd: FilesCmd) -> Result<(), CliError> {
                 println!("{name}");
             }
         }
-        FilesCmd::Encrypt { path } => {
+        FilesCmd::Encrypt { path, name } => {
+            let path = match path {
+                Some(p) => p,
+                None => crate::keys::prompt_key_path("Source file path: ")?,
+            };
+            let vault_name = match name {
+                Some(n) => n,
+                None => crate::prompts::prompt_line("Vault filename (under files/): ")?,
+            };
+            if vault_name.is_empty() {
+                return Err(CliError::Config("vault filename is required".into()));
+            }
             let session = UnlockSession::unlock_data_key(&config, &layout)?;
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-            let dest = layout.files_dir.join(name);
+            let dest = layout.files_dir.join(&vault_name);
             let overwrite = if dest.exists() {
                 confirm_or_cancel(&format!(
                     "⚠️  You are about to encrypt: {}\n\
@@ -328,7 +344,8 @@ pub fn run_files(cmd: FilesCmd) -> Result<(), CliError> {
                 ))?;
                 OverwritePolicy::RefuseIfExists
             };
-            let stored = vault.encrypt_file(&path, &session.data_key, overwrite)?;
+            let stored =
+                vault.encrypt_file_as(&path, &vault_name, &session.data_key, overwrite)?;
             println!("Stored as {stored}");
         }
         FilesCmd::Decrypt {
@@ -342,9 +359,10 @@ pub fn run_files(cmd: FilesCmd) -> Result<(), CliError> {
                 use std::io::Write;
                 std::io::stdout().write_all(&bytes).map_err(CliError::Io)?;
             } else {
-                let dest = output_path.ok_or_else(|| {
-                    CliError::Config("output path required (or use --stdout)".into())
-                })?;
+                let dest = match output_path {
+                    Some(p) => p,
+                    None => crate::keys::prompt_key_path("Output file path: ")?,
+                };
                 if dest.exists() {
                     confirm_or_cancel(&format!(
                         "⚠️  You are about to decrypt: {name}\n\
