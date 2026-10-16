@@ -109,11 +109,15 @@ pub enum TotpCmd {
     /// Add a standalone seed
     Add { site: String },
     /// Show current 6-digit code
-    Get { site: String },
+    Get { site: String, account: String },
     /// Remove entry (confirms)
-    Remove { site: String },
+    Remove { site: String, account: String },
     /// Write QR image for migration
-    Export { site: String, path: PathBuf },
+    Export {
+        site: String,
+        account: String,
+        path: PathBuf,
+    },
     /// Import from QR or seed file
     Import { path: PathBuf },
 }
@@ -444,22 +448,22 @@ pub fn run_totp(cmd: TotpCmd) -> Result<(), CliError> {
             store.add(default_entry(site, account, seed.trim()))?;
             store.save_path(&session.data_key, &layout.totp)?;
         }
-        TotpCmd::Get { site } => {
-            let entry = store.get(&site)?;
+        TotpCmd::Get { site, account } => {
+            let entry = store.get(&site, &account)?;
             let code = entry.current_code()?;
             println!(
-                "{}: {} (expires in {}s)",
-                site, code.code, code.seconds_remaining
+                "{} ({}): {} (expires in {}s)",
+                site, account, code.code, code.seconds_remaining
             );
         }
-        TotpCmd::Remove { site } => {
-            let confirmation = store.prepare_remove(&site)?;
+        TotpCmd::Remove { site, account } => {
+            let confirmation = store.prepare_remove(&site, &account)?;
             confirm_or_cancel(&confirmation.prompt)?;
-            store.remove(&site)?;
+            store.remove(&site, &account)?;
             store.save_path(&session.data_key, &layout.totp)?;
         }
-        TotpCmd::Export { site, path } => {
-            store.export_to_path(&site, path)?;
+        TotpCmd::Export { site, account, path } => {
+            store.export_to_path(&site, &account, path)?;
         }
         TotpCmd::Import { path } => {
             store.import_from_path(path)?;
@@ -477,10 +481,9 @@ pub fn run_system(cmd: SystemCmd) -> Result<(), CliError> {
             identity,
         } => {
             if from_snapshot {
-                let path = path.ok_or_else(|| {
-                    CliError::Config("--path is required with --from-snapshot".into())
-                })?;
-                lifecycle::init_from_snapshot(path, identity)
+                let bundle = crate::snapshot::resolve_bundle_dir(path)?;
+                let identity_path = crate::snapshot::resolve_identity_path(identity)?;
+                lifecycle::init_from_snapshot(bundle, identity_path)
             } else {
                 let mut config = load_config()?;
                 lifecycle::init(&mut config)
@@ -510,15 +513,15 @@ pub fn run_system(cmd: SystemCmd) -> Result<(), CliError> {
 
 #[derive(Subcommand, Debug)]
 pub enum SystemCmd {
-    /// Create a new vault, or bootstrap from a snapshot (host.age)
+    /// Create a new vault, or bootstrap from a snapshot (user.age)
     Init {
-        /// Decrypt host.age into the vault, then prompt for the master password and main key
+        /// Decrypt the snapshot bundle into the vault, then prompt for credentials
         #[arg(long)]
         from_snapshot: bool,
-        /// Snapshot root (git clone with host.age); required with --from-snapshot
-        #[arg(long, value_name = "PATH", requires = "from_snapshot")]
+        /// Snapshot bundle directory; prompted when omitted
+        #[arg(value_name = "PATH", requires = "from_snapshot")]
         path: Option<PathBuf>,
-        /// Sync age private key (default: {path}/.nvlt-sync/host.key)
+        /// Sync identity private key path; prompted when omitted
         #[arg(long, value_name = "PATH", requires = "from_snapshot")]
         identity: Option<PathBuf>,
     },
@@ -530,7 +533,7 @@ pub enum SystemCmd {
     Recover,
     /// Change master password and/or unlock keys; re-encrypt all stores and backup
     Rotate,
-    /// Export or import encrypted host.age snapshots for git sync
+    /// Export or import encrypted user.age snapshots for git sync
     Snapshot {
         #[command(subcommand)]
         cmd: SnapshotCmd,
@@ -546,24 +549,31 @@ pub enum SystemCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum SnapshotCmd {
-    /// Run backup, then write host.age + host.pub under --path (sync host passphrase)
+    /// Run backup, then write user.age + user.pub (sync host passphrase)
     Export {
-        /// Git clone or directory containing host.age (uses .nvlt-sync/host.key)
-        #[arg(long)]
-        path: PathBuf,
+        /// Git clone or directory for the public snapshot bundle; prompted when omitted
+        path: Option<PathBuf>,
     },
-    /// Decrypt host.age into vault root (confirms overwrite)
+    /// Decrypt user.age into vault root (confirms overwrite)
     Import {
-        #[arg(long)]
-        path: PathBuf,
+        /// Snapshot bundle directory; prompted when omitted
+        path: Option<PathBuf>,
     },
 }
 
 pub fn run_snapshot(cmd: SnapshotCmd) -> Result<(), CliError> {
     let config = load_config()?;
     match cmd {
-        SnapshotCmd::Export { path } => crate::snapshot::snapshot_export(&config, &path),
-        SnapshotCmd::Import { path } => crate::snapshot::snapshot_import(&config, &path),
+        SnapshotCmd::Export { path } => {
+            let bundle = crate::snapshot::resolve_bundle_dir(path)?;
+            let identity = crate::snapshot::resolve_identity_path(None)?;
+            crate::snapshot::snapshot_export(&config, &bundle, &identity)
+        }
+        SnapshotCmd::Import { path } => {
+            let bundle = crate::snapshot::resolve_bundle_dir(path)?;
+            let identity = crate::snapshot::resolve_identity_path(None)?;
+            crate::snapshot::snapshot_import(&config, &bundle, &identity)
+        }
     }
 }
 
