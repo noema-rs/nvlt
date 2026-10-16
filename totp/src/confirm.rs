@@ -7,7 +7,7 @@ pub struct RemoveConfirmation {
 
 pub fn remove_confirmation(site: &str, account: &str) -> RemoveConfirmation {
     let prompt = format!(
-        "⚠️  You are about to delete the TOTP entry for: {site} ({account})\n\
+        "⚠️  You are about to delete the TOTP entry for issuer {site}, name {account}\n\
             You will lose access to the 2FA codes for this service.\n\
             This action cannot be undone.\n\
          \n\

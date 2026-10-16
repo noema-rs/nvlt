@@ -94,26 +94,26 @@ Second-factor codes stored **separately** from login passwords (when there is no
 
 | Command | Description |
 |---------|-------------|
-| `nvlt totp list` | Registered sites (`site (account)`) |
-| `nvlt totp add <site>` | Interactive: account label + base32 seed |
-| `nvlt totp get <site>` | Current 6-digit code and seconds remaining |
-| `nvlt totp remove <site>` | Delete entry; asks for confirmation |
-| `nvlt totp export <site> <path>` | Write QR image for migration |
+| `nvlt totp list` | Registered entries (`issuer` + `name`) |
+| `nvlt totp add <issuer>` | Interactive: name + base32 seed (or `otpauth://` URI) |
+| `nvlt totp get <issuer> <name>` | Current 6-digit code and seconds remaining |
+| `nvlt totp remove <issuer> <name>` | Delete entry; asks for confirmation |
+| `nvlt totp export <issuer> <name> <path>` | Write QR image for migration |
 | `nvlt totp import <path>` | Import from QR or seed file |
 
 **Examples:**
 
 ```bash
-nvlt totp add vendor-2fa-only
-nvlt totp get vendor-2fa-only
-nvlt totp export vendor-2fa-only ~/migration-qr.png
+nvlt totp add GitHub
+nvlt totp get GitHub my-account
+nvlt totp export GitHub my-account ~/migration-qr.png
 nvlt totp import ~/seed.txt
 ```
 
 **When to use `pass` vs `totp`:**
 
 - **`pass` + embedded TOTP:** login and 2FA for the same service/account.
-- **`totp`:** OTP only (multiple accounts per site via the account label in `add`).
+- **`totp`:** OTP only (multiple names per issuer via `add`).
 
 ---
 

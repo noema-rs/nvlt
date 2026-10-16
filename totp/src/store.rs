@@ -67,7 +67,9 @@ impl TotpStore {
                 account: entry.account,
             });
         }
-        self.document.entries.push(entry.into_entry(Utc::now()));
+        self.document
+            .entries
+            .push(entry.into_entry(Utc::now())?);
         Ok(())
     }
 

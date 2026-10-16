@@ -74,6 +74,26 @@ pub struct NewTotpEntry {
     pub period: u32,
 }
 
+/// Normalize and validate a base32 seed, or parse a pasted `otpauth://` URI.
+pub fn prepare_seed(raw: &str) -> Result<String, Error> {
+    let trimmed = raw.trim();
+    if trimmed.to_ascii_lowercase().starts_with("otpauth://") {
+        return Ok(parse_otpauth_uri(trimmed)?.seed);
+    }
+    let normalized: String = trimmed
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(|c| c.to_uppercase())
+        .collect();
+    if normalized.is_empty() {
+        return Err(vault_core::Error::InvalidTotpSeed.into());
+    }
+    Secret::Encoded(normalized.clone())
+        .to_bytes()
+        .map_err(|_| Error::Core(vault_core::Error::InvalidTotpSeed))?;
+    Ok(normalized)
+}
+
 impl TotpEntry {
     pub fn current_code(&self) -> Result<TotpCode, Error> {
         let totp = self.build_totp()?;
@@ -96,7 +116,8 @@ impl TotpEntry {
     }
 
     fn build_totp(&self) -> Result<TOTP, Error> {
-        let secret = Secret::Encoded(self.seed.clone())
+        let seed = prepare_seed(&self.seed)?;
+        let secret = Secret::Encoded(seed)
             .to_bytes()
             .map_err(|_| vault_core::Error::InvalidTotpSeed)?;
 
@@ -115,16 +136,19 @@ impl TotpEntry {
 }
 
 impl NewTotpEntry {
-    pub fn into_entry(self, now: DateTime<Utc>) -> TotpEntry {
-        TotpEntry {
+    pub fn into_entry(self, now: DateTime<Utc>) -> Result<TotpEntry, Error> {
+        let seed = prepare_seed(&self.seed)?;
+        let entry = TotpEntry {
             site: self.site,
             account: self.account,
-            seed: self.seed,
+            seed,
             algorithm: self.algorithm,
             digits: self.digits,
             period: self.period,
             created_at: now,
-        }
+        };
+        entry.build_totp()?;
+        Ok(entry)
     }
 }
 
@@ -161,5 +185,21 @@ pub fn default_entry(
         algorithm: TotpAlgorithm::Sha1,
         digits: 6,
         period: 30,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_seed_normalizes_base32() {
+        let normalized = prepare_seed("gezd gnbv gy3t qojq gezdgnbvg y3tqojq").unwrap();
+        assert_eq!(normalized, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+    }
+
+    #[test]
+    fn prepare_seed_rejects_garbage() {
+        assert!(prepare_seed("not-a-valid-seed!!!").is_err());
     }
 }

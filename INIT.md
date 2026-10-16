@@ -427,11 +427,11 @@ nvlt files remove <name>
 ### Standalone TOTP commands
 
 ```bash
-nvlt totp add <site>
+nvlt totp add <issuer>
 nvlt totp list
-nvlt totp get <site>
-nvlt totp remove <site>
-nvlt totp export <site> <path>
+nvlt totp get <issuer> <name>
+nvlt totp remove <issuer> <name>
+nvlt totp export <issuer> <name> <path>
 nvlt totp import <path>
 ```
 
@@ -681,7 +681,7 @@ nvlt files decrypt document.pdf ~/Downloads/document.pdf
 ### Daily use — standalone TOTP
 
 ```bash
-nvlt totp get 2fa-only.example
+nvlt totp get 2fa-only.example my-account
 ```
 
 ### `nvlt system backup`

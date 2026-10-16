@@ -104,18 +104,18 @@ pub enum FilesCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum TotpCmd {
-    /// List standalone TOTP sites
+    /// List standalone TOTP entries (issuer and name)
     List,
-    /// Add a standalone seed
-    Add { site: String },
+    /// Add a standalone seed for an issuer
+    Add { issuer: String },
     /// Show current 6-digit code
-    Get { site: String, account: String },
+    Get { issuer: String, name: String },
     /// Remove entry (confirms)
-    Remove { site: String, account: String },
+    Remove { issuer: String, name: String },
     /// Write QR image for migration
     Export {
-        site: String,
-        account: String,
+        issuer: String,
+        name: String,
         path: PathBuf,
     },
     /// Import from QR or seed file
@@ -439,31 +439,31 @@ pub fn run_totp(cmd: TotpCmd) -> Result<(), CliError> {
     match cmd {
         TotpCmd::List => {
             for entry in store.list() {
-                println!("{} ({})", entry.site, entry.account);
+                println!("issuer={}  name={}", entry.site, entry.account);
             }
         }
-        TotpCmd::Add { site } => {
-            let account = crate::prompts::prompt_line("Account label: ")?;
-            let seed = prompt_password("TOTP seed (base32): ").map_err(CliError::Io)?;
-            store.add(default_entry(site, account, seed.trim()))?;
+        TotpCmd::Add { issuer } => {
+            let name = crate::prompts::prompt_line("Name: ")?;
+            let seed = prompt_password("TOTP seed (base32 or otpauth URI): ").map_err(CliError::Io)?;
+            store.add(default_entry(issuer, name, &seed))?;
             store.save_path(&session.data_key, &layout.totp)?;
         }
-        TotpCmd::Get { site, account } => {
-            let entry = store.get(&site, &account)?;
+        TotpCmd::Get { issuer, name } => {
+            let entry = store.get(&issuer, &name)?;
             let code = entry.current_code()?;
             println!(
-                "{} ({}): {} (expires in {}s)",
-                site, account, code.code, code.seconds_remaining
+                "issuer={issuer}  name={name}  totp={}  (expires in {}s)",
+                code.code, code.seconds_remaining
             );
         }
-        TotpCmd::Remove { site, account } => {
-            let confirmation = store.prepare_remove(&site, &account)?;
+        TotpCmd::Remove { issuer, name } => {
+            let confirmation = store.prepare_remove(&issuer, &name)?;
             confirm_or_cancel(&confirmation.prompt)?;
-            store.remove(&site, &account)?;
+            store.remove(&issuer, &name)?;
             store.save_path(&session.data_key, &layout.totp)?;
         }
-        TotpCmd::Export { site, account, path } => {
-            store.export_to_path(&site, &account, path)?;
+        TotpCmd::Export { issuer, name, path } => {
+            store.export_to_path(&issuer, &name, path)?;
         }
         TotpCmd::Import { path } => {
             store.import_from_path(path)?;
