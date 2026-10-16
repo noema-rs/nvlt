@@ -70,6 +70,13 @@ pub enum EnvCmd {
     Export { profile: String },
     /// Shell wrapper evaluates export output (see INIT.md)
     Load { profile: String },
+    /// Interactively set variables on a profile
+    Edit { profile: String },
+    /// Import KEY=VALUE lines from a file (path prompted when omitted)
+    Import {
+        profile: String,
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -278,6 +285,36 @@ pub fn run_env(cmd: EnvCmd) -> Result<(), CliError> {
         }
         EnvCmd::Export { profile } | EnvCmd::Load { profile } => {
             env_export_profile(&config, &layout, &vault, &profile)?;
+        }
+        EnvCmd::Edit { profile } => {
+            let session = UnlockSession::unlock_data_key(&config, &layout)?;
+            let mut store = match vault.load_profile(&profile, &session.data_key) {
+                Ok(s) => s,
+                Err(vault_envs::Error::ProfileNotFound { .. }) => {
+                    vault.add_profile(&profile, &session.data_key)?;
+                    vault.load_profile(&profile, &session.data_key)?
+                }
+                Err(e) => return Err(e.into()),
+            };
+            println!("Editing profile \"{profile}\" (empty key to finish).");
+            loop {
+                let key = crate::prompts::prompt_line("Variable key: ")?;
+                if key.is_empty() {
+                    break;
+                }
+                let value = crate::prompts::prompt_line("Value: ")?;
+                store.set(key, value);
+            }
+            vault.save_profile(&store, &session.data_key)?;
+        }
+        EnvCmd::Import { profile, path } => {
+            let path = match path {
+                Some(p) => p,
+                None => crate::keys::prompt_key_path("Env file path to import: ")?,
+            };
+            let session = UnlockSession::unlock_data_key(&config, &layout)?;
+            vault.import_dotenv_file(&profile, &path, &session.data_key)?;
+            println!("Imported variables into profile \"{profile}\" from {}.", path.display());
         }
     }
     Ok(())
