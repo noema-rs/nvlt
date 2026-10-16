@@ -467,7 +467,7 @@ nvlt lock
 ### SSH commands (`ssh.age`)
 
 ```bash
-nvlt ssh register <name> --path ~/.ssh/id_ed25519 [--public …]
+nvlt ssh register <name> [--public]
 nvlt ssh list
 nvlt ssh activate <name>
 nvlt ssh deactivate <name>

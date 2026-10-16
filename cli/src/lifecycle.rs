@@ -636,7 +636,7 @@ mod tests {
         ssh.add(NewSshEntry {
             name: "testkey".into(),
             private_pem: "fake-private".into(),
-            public_openssh: "fake-public".into(),
+            public_openssh: Some("fake-public".into()),
             host: None,
             user: None,
         })

@@ -22,7 +22,8 @@ impl SshDocument {
 pub struct SshEntry {
     pub name: String,
     pub private_pem: String,
-    pub public_openssh: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_openssh: Option<String>,
     pub host: Option<String>,
     pub user: Option<String>,
     pub installed_paths: Vec<String>,
@@ -33,7 +34,7 @@ pub struct SshEntry {
 pub struct NewSshEntry {
     pub name: String,
     pub private_pem: String,
-    pub public_openssh: String,
+    pub public_openssh: Option<String>,
     pub host: Option<String>,
     pub user: Option<String>,
 }

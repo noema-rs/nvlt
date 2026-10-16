@@ -48,17 +48,17 @@ fn save_store(
 pub fn register(
     config: &crate::config::Config,
     name: String,
-    private_path: PathBuf,
-    public_path: Option<PathBuf>,
+    include_public: bool,
 ) -> Result<(), CliError> {
     let layout = VaultLayout::from_config(config);
     let session = UnlockSession::unlock_data_key(config, &layout)?;
+    let private_path = crate::keys::prompt_key_path("Private key file path: ")?;
     let private_pem = fs::read_to_string(&private_path)?;
-    let public_openssh = if let Some(p) = public_path {
-        fs::read_to_string(p)?
+    let public_openssh = if include_public {
+        let public_path = crate::keys::prompt_key_path("Public key file path: ")?;
+        Some(fs::read_to_string(public_path)?)
     } else {
-        let guess = private_path.with_extension("pub");
-        fs::read_to_string(guess).map_err(CliError::Io)?
+        None
     };
     let mut store = load_store(&session, &layout)?;
     store.add(NewSshEntry {
@@ -92,12 +92,17 @@ pub fn activate(config: &crate::config::Config, name: &str) -> Result<(), CliErr
     {
         let entry = store.get_mut(name)?;
         fs::write(&priv_path, &entry.private_pem)?;
-        fs::write(&pub_path, &entry.public_openssh)?;
         set_private_file_permissions(&priv_path)?;
-        entry.installed_paths = vec![
-            priv_path.display().to_string(),
-            pub_path.display().to_string(),
-        ];
+        let mut installed = vec![priv_path.display().to_string()];
+        if let Some(public) = entry
+            .public_openssh
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            fs::write(&pub_path, public)?;
+            installed.push(pub_path.display().to_string());
+        }
+        entry.installed_paths = installed;
     }
     save_store(&store, &session, &layout)?;
     println!("Activated '{name}' at {}", priv_path.display());

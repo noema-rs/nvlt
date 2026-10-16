@@ -123,7 +123,7 @@ Private/public key material in `ssh.age`. **Activate** writes keys to `~/.ssh/nv
 
 | Command | Description |
 |---------|-------------|
-| `nvlt ssh register <name> --path <private_key> [--public <key.pub>]` | Register in vault; without `--public`, uses `<private>.pub` |
+| `nvlt ssh register <name> [--public]` | Register in vault; prompts for private key path; `--public` also prompts for public key path |
 | `nvlt ssh list` | Registered names |
 | `nvlt ssh activate <name>` | Write keys under `~/.ssh/` |
 | `nvlt ssh deactivate <name>` | Remove files created by `activate` |
@@ -133,7 +133,8 @@ Private/public key material in `ssh.age`. **Activate** writes keys to `~/.ssh/nv
 **Examples:**
 
 ```bash
-nvlt ssh register work --path ~/.ssh/id_ed25519
+nvlt ssh register work
+nvlt ssh register work --public
 nvlt ssh activate work
 ssh -i ~/.ssh/nvlt_work user@server
 nvlt ssh deactivate work
