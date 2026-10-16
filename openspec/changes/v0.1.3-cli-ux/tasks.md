@@ -1,0 +1,8 @@
+- [x] Issue #1 SSH activate filenames
+- [x] Issue #2 files prompts
+- [x] Issue #3 env edit/import
+- [x] Issue #4 snapshot bundle vs identity
+- [x] Issue #5 interactive path prompts
+- [x] Issue #6 TOTP site + account
+- [x] Update openspec/specs
+- [x] Bump cli to 0.1.3
