@@ -8,6 +8,7 @@ use clap::Subcommand;
 
 use crate::confirm::confirm;
 use crate::error::CliError;
+use crate::keys;
 
 #[derive(Subcommand, Debug)]
 pub enum AgeCmd {
@@ -80,27 +81,39 @@ pub fn run_age(cmd: AgeCmd) -> Result<(), CliError> {
     }
 }
 
-fn read_input(input: Option<&std::path::Path>) -> Result<Vec<u8>, CliError> {
+fn resolve_input_path(input: Option<&std::path::Path>) -> Result<PathBuf, CliError> {
     match input {
-        Some(path) if path.as_os_str() != "-" => Ok(fs::read(path)?),
-        _ => {
-            let mut buf = Vec::new();
-            std::io::stdin().read_to_end(&mut buf)?;
-            Ok(buf)
-        }
+        Some(path) if path.as_os_str() != "-" => Ok(path.to_path_buf()),
+        Some(_) => Ok(PathBuf::from("-")),
+        None => keys::prompt_key_path("Input file path: "),
     }
 }
 
-fn write_output(output: Option<&std::path::Path>, bytes: &[u8]) -> Result<(), CliError> {
+fn resolve_output_path(output: Option<&std::path::Path>) -> Result<PathBuf, CliError> {
     match output {
-        Some(path) if path.as_os_str() != "-" => {
-            fs::write(path, bytes)?;
-            Ok(())
-        }
-        _ => {
-            std::io::stdout().write_all(bytes)?;
-            Ok(())
-        }
+        Some(path) if path.as_os_str() != "-" => Ok(path.to_path_buf()),
+        Some(_) => Ok(PathBuf::from("-")),
+        None => keys::prompt_key_path("Output file path: "),
+    }
+}
+
+fn read_input(input: &std::path::Path) -> Result<Vec<u8>, CliError> {
+    if input.as_os_str() == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf)?;
+        Ok(buf)
+    } else {
+        Ok(fs::read(input)?)
+    }
+}
+
+fn write_output(output: &std::path::Path, bytes: &[u8]) -> Result<(), CliError> {
+    if output.as_os_str() == "-" {
+        std::io::stdout().write_all(bytes)?;
+        Ok(())
+    } else {
+        fs::write(output, bytes)?;
+        Ok(())
     }
 }
 
@@ -147,8 +160,8 @@ fn prompt_passphrase_confirmed() -> Result<String, CliError> {
 
 fn encrypt_with_passphrase(
     passphrase: &str,
-    output: Option<&std::path::Path>,
-    input: Option<&std::path::Path>,
+    output: &std::path::Path,
+    input: &std::path::Path,
 ) -> Result<(), CliError> {
     let plaintext = read_input(input)?;
     let encryptor = Encryptor::with_user_passphrase(AgeSecretString::from(passphrase.to_string()));
@@ -171,13 +184,15 @@ fn age_encrypt(
     output: Option<&std::path::Path>,
     input: Option<&std::path::Path>,
 ) -> Result<(), CliError> {
+    let input = resolve_input_path(input)?;
+    let output = resolve_output_path(output)?;
     if passphrase {
         let passphrase = prompt_passphrase_confirmed()?;
-        return encrypt_with_passphrase(&passphrase, output, input);
+        return encrypt_with_passphrase(&passphrase, &output, &input);
     }
 
     let recipients = collect_recipients(recipients, recipients_file)?;
-    let plaintext = read_input(input)?;
+    let plaintext = read_input(&input)?;
 
     let encryptor = Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn Recipient))
         .map_err(|e| CliError::Config(e.to_string()))?;
@@ -190,7 +205,7 @@ fn age_encrypt(
         .finish()
         .map_err(|e| CliError::Config(e.to_string()))?;
 
-    write_output(output, &encrypted)
+    write_output(&output, &encrypted)
 }
 
 fn collect_identities(paths: &[PathBuf]) -> Result<Vec<age::x25519::Identity>, CliError> {
@@ -233,7 +248,9 @@ fn age_decrypt(
     output: Option<&std::path::Path>,
     input: Option<&std::path::Path>,
 ) -> Result<(), CliError> {
-    let ciphertext = read_input(input)?;
+    let input = resolve_input_path(input)?;
+    let output = resolve_output_path(output)?;
+    let ciphertext = read_input(&input)?;
 
     if is_scrypt_ciphertext(&ciphertext)? {
         let passphrase = rpassword::prompt_password("Passphrase: ").map_err(CliError::Io)?;
@@ -241,19 +258,23 @@ fn age_decrypt(
         let refs: Vec<&dyn Identity> = vec![&scrypt_identity as &dyn Identity];
         let plaintext = decrypt_with(&ciphertext, &refs)
             .map_err(|_| CliError::Config("decryption failed: wrong passphrase".into()))?;
-        return write_output(output, &plaintext);
+        return write_output(&output, &plaintext);
     }
 
-    let key_identities = collect_identities(identities)?;
+    let mut identity_paths: Vec<PathBuf> = identities.to_vec();
+    if identity_paths.is_empty() {
+        identity_paths.push(keys::prompt_key_path("Identity file path: ")?);
+    }
+    let key_identities = collect_identities(&identity_paths)?;
     if key_identities.is_empty() {
         return Err(CliError::Config(
-            "ciphertext is encrypted to recipients; provide an identity with -i".into(),
+            "ciphertext is encrypted to recipients; provide an identity file".into(),
         ));
     }
     let refs: Vec<&dyn Identity> = key_identities.iter().map(|i| i as &dyn Identity).collect();
     let plaintext = decrypt_with(&ciphertext, &refs)
         .map_err(|_| CliError::Config("decryption failed: wrong identity".into()))?;
-    write_output(output, &plaintext)
+    write_output(&output, &plaintext)
 }
 
 fn age_identity(
@@ -390,7 +411,7 @@ mod tests {
         fs::write(&plain_path, b"payload").unwrap();
 
         age_encrypt(&[public], None, false, Some(&rec_path), Some(&plain_path)).unwrap();
-        encrypt_with_passphrase("correct horse", Some(&pass_path), Some(&plain_path)).unwrap();
+        encrypt_with_passphrase("correct horse", &pass_path, &plain_path).unwrap();
 
         assert!(!is_scrypt_ciphertext(&fs::read(&rec_path).unwrap()).unwrap());
         assert!(is_scrypt_ciphertext(&fs::read(&pass_path).unwrap()).unwrap());
@@ -409,7 +430,7 @@ mod tests {
         let ct_path = dir.join("ct.age");
         fs::write(&plain_path, b"secret payload").unwrap();
 
-        encrypt_with_passphrase("correct horse", Some(&ct_path), Some(&plain_path)).unwrap();
+        encrypt_with_passphrase("correct horse", &ct_path, &plain_path).unwrap();
         let ciphertext = fs::read(&ct_path).unwrap();
 
         let identity =

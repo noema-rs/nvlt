@@ -5,7 +5,7 @@ Exposes age encryption, decryption, and identity handling as a thin command pass
 ## Requirements
 
 ### Requirement: Age encrypt command
-The CLI SHALL provide `nvlt age encrypt` that encrypts a file or stdin either to one or more recipients, accepting recipient public keys (`age1…`) and/or a recipients file, or with an interactively prompted passphrase, and writes standard age ciphertext to stdout or a specified output path. The output SHALL be readable by the upstream `age` CLI.
+The CLI SHALL provide `nvlt age encrypt` that encrypts a file either to one or more recipients, accepting recipient public keys (`age1…`) and/or a recipients file, or with an interactively prompted passphrase, and writes standard age ciphertext to an output file. When input or output paths are omitted, the CLI SHALL prompt for them interactively with visible echo. The output SHALL be readable by the upstream `age` CLI.
 
 #### Scenario: Encrypt to a recipient
 - **WHEN** the user runs `nvlt age encrypt` with a valid recipient public key and input
@@ -24,7 +24,7 @@ The CLI SHALL provide `nvlt age encrypt` that encrypts a file or stdin either to
 - **THEN** the command fails with a clear error and produces no output
 
 ### Requirement: Age decrypt command
-The CLI SHALL provide `nvlt age decrypt` that decrypts age ciphertext, writing plaintext to stdout or a specified output path. It SHALL detect the encryption mode from the file header: for recipient-encrypted input it uses one or more identity files (`AGE-SECRET-KEY-1…`), and for passphrase-encrypted (scrypt) input it prompts for the passphrase.
+The CLI SHALL provide `nvlt age decrypt` that decrypts age ciphertext, writing plaintext to an output file. When input or output paths are omitted, the CLI SHALL prompt for them interactively. For recipient-encrypted input it uses one or more identity files (`AGE-SECRET-KEY-1…`), prompting visibly for the identity path when `-i` is omitted; for passphrase-encrypted (scrypt) input it prompts for the passphrase.
 
 #### Scenario: Decrypt with identity
 - **WHEN** ciphertext produced by the `age` CLI is decrypted with the matching identity file
