@@ -157,6 +157,7 @@ fn build_tar(entries: &[(String, PathBuf)]) -> Result<Vec<u8>, CliError> {
             header.set_size(file.metadata()?.len());
             header.set_mode(0o600);
             header.set_entry_type(EntryType::Regular);
+            header.set_cksum();
             builder.append(&header, &mut file)?;
         }
         builder.finish()?;
@@ -340,5 +341,65 @@ mod tests {
         let enc = encrypt_host_archive(plain, "sync-pass", &recipient).unwrap();
         let dec = decrypt_host_archive(&enc, "sync-pass", &identity).unwrap();
         assert_eq!(dec, plain);
+    }
+
+    #[test]
+    fn build_tar_round_trip() {
+        let dir = std::env::temp_dir().join(format!("nvlt-tar-rt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        fs::write(&cfg, "[vault]\nlock = \"x\"\n").unwrap();
+
+        let tar = build_tar(&[(VAULT_CONFIG_FILE.to_string(), cfg.clone())]).unwrap();
+        let out_root = dir.join("extract");
+        extract_tar(&tar, &out_root).unwrap();
+        assert_eq!(
+            fs::read_to_string(out_root.join(VAULT_CONFIG_FILE)).unwrap(),
+            fs::read_to_string(&cfg).unwrap()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tar_append_without_cksum_fails_extract() {
+        let mut buf = Vec::new();
+        {
+            let mut builder = Builder::new(&mut buf);
+            let mut header = Header::new_gnu();
+            header.set_path("config.toml").unwrap();
+            header.set_size(1);
+            header.set_mode(0o600);
+            header.set_entry_type(EntryType::Regular);
+            builder.append(&header, &mut &b"x"[..]).unwrap();
+            builder.finish().unwrap();
+        }
+        let err = extract_tar(&buf, Path::new("/tmp/unused")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cksum") || msg.contains("checksum"),
+            "expected tar checksum error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn snapshot_tar_through_host_archive_round_trip() {
+        let dir = std::env::temp_dir().join(format!("nvlt-snap-full-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        fs::write(&cfg, "[vault]\nlock = \"test-lock\"\n").unwrap();
+
+        let tar = build_tar(&[(VAULT_CONFIG_FILE.to_string(), cfg.clone())]).unwrap();
+        let identity = age::x25519::Identity::generate();
+        let enc = encrypt_host_archive(&tar, "sync-pass", &identity.to_public()).unwrap();
+        let plain = decrypt_host_archive(&enc, "sync-pass", &identity).unwrap();
+        let out_root = dir.join("extract");
+        extract_tar(&plain, &out_root).unwrap();
+        assert_eq!(
+            fs::read_to_string(out_root.join(VAULT_CONFIG_FILE)).unwrap(),
+            fs::read_to_string(&cfg).unwrap()
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }
