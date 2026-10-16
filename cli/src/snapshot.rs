@@ -7,70 +7,27 @@ use age_core::secrecy::{ExposeSecret, SecretString as AgeSecretString};
 use tar::{Builder, EntryType, Header};
 
 use crate::config::{
-    set_private_dir_permissions, set_private_file_permissions, Config, VAULT_CONFIG_FILE,
+    set_private_file_permissions, Config, VAULT_CONFIG_FILE,
 };
 use crate::confirm::confirm_or_cancel;
 use crate::error::CliError;
+use crate::keys;
 use crate::lifecycle;
 use crate::paths::VaultLayout;
 
-const SYNC_IDENTITY_FILE: &str = "host.key";
-
-fn snapshot_identity_path(snapshot_root: &Path) -> PathBuf {
-    snapshot_root.join(".nvlt-sync").join(SYNC_IDENTITY_FILE)
-}
-
-fn ensure_snapshot_identity(snapshot_root: &Path) -> Result<age::x25519::Identity, CliError> {
-    fs::create_dir_all(snapshot_root.join(".nvlt-sync"))?;
-    set_private_dir_permissions(&snapshot_root.join(".nvlt-sync"))?;
-    let id_path = snapshot_identity_path(snapshot_root);
-    if id_path.is_file() {
-        return load_sync_identity_file(&id_path);
-    }
-    let identity = age::x25519::Identity::generate();
-    fs::write(&id_path, identity.to_string().expose_secret().as_bytes())?;
-    set_private_file_permissions(&id_path)?;
-    Ok(identity)
-}
-
-fn load_sync_identity_file(path: &Path) -> Result<age::x25519::Identity, CliError> {
-    let text = fs::read_to_string(path)?;
-    text.parse::<age::x25519::Identity>()
-        .map_err(|e| CliError::Config(e.to_string()))
-}
-
-fn resolve_identity_path(snapshot_root: &Path, identity_file: Option<&Path>) -> PathBuf {
-    identity_file
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| snapshot_identity_path(snapshot_root))
-}
-
-pub fn load_sync_identity(
-    snapshot_root: &Path,
-    identity_file: Option<&Path>,
-) -> Result<age::x25519::Identity, CliError> {
-    let id_path = resolve_identity_path(snapshot_root, identity_file);
-    if !id_path.is_file() {
-        return Err(CliError::Config(format!(
-            "missing sync private key at {} (use --identity or copy .nvlt-sync/host.key from the export machine)",
-            id_path.display()
-        )));
-    }
-    load_sync_identity_file(&id_path)
-}
-
-/// Decrypt host.age and extract vault files into the configured vault root.
+/// Decrypt user.age and extract vault files into the configured vault root.
 pub fn materialize_snapshot(
     config: &Config,
-    snapshot_root: &Path,
-    identity_file: Option<&Path>,
+    bundle_dir: &Path,
+    identity_path: &Path,
 ) -> Result<(), CliError> {
     let layout = VaultLayout::from_config(config);
-    let (host_path, _pub_path) = host_paths(config, snapshot_root);
-    if !host_path.is_file() {
+    warn_snapshot_custody(bundle_dir, &layout);
+    let (archive_path, _pub_path) = bundle_paths(config, bundle_dir);
+    if !archive_path.is_file() {
         return Err(CliError::Config(format!(
-            "missing snapshot host archive at {}",
-            host_path.display()
+            "missing snapshot archive at {}",
+            archive_path.display()
         )));
     }
     if vault_has_overwritable_files(&layout) {
@@ -82,8 +39,8 @@ pub fn materialize_snapshot(
 
     let host_passphrase =
         rpassword::prompt_password("Sync host passphrase: ").map_err(CliError::Io)?;
-    let identity = load_sync_identity(snapshot_root, identity_file)?;
-    let ciphertext = fs::read(&host_path)?;
+    let identity = load_sync_identity_file(identity_path)?;
+    let ciphertext = fs::read(&archive_path)?;
     let plain = decrypt_host_archive(&ciphertext, &host_passphrase, &identity)?;
 
     fs::create_dir_all(&layout.root)?;
@@ -91,10 +48,59 @@ pub fn materialize_snapshot(
     Ok(())
 }
 
-fn host_paths(config: &Config, snapshot_root: &Path) -> (PathBuf, PathBuf) {
+pub fn resolve_bundle_dir(provided: Option<PathBuf>) -> Result<PathBuf, CliError> {
+    match provided {
+        Some(p) => Ok(p),
+        None => keys::prompt_key_path("Snapshot bundle directory (user.age / user.pub): "),
+    }
+}
+
+pub fn resolve_identity_path(provided: Option<PathBuf>) -> Result<PathBuf, CliError> {
+    match provided {
+        Some(p) => Ok(p),
+        None => keys::prompt_key_path("Sync identity private key path: "),
+    }
+}
+
+pub fn warn_snapshot_custody(bundle_dir: &Path, layout: &VaultLayout) {
+    let bundle = bundle_dir.canonicalize().unwrap_or_else(|_| bundle_dir.to_path_buf());
+    let vault = layout
+        .root
+        .canonicalize()
+        .unwrap_or_else(|_| layout.root.clone());
+    if bundle.starts_with(&vault) || vault.starts_with(&bundle) {
+        eprintln!(
+            "⚠️  Snapshot bundle directory should not live inside the vault root (or vice versa)."
+        );
+    }
+    if same_mount_point(&bundle, &vault) {
+        eprintln!(
+            "⚠️  Keep git snapshot bundles and the sync private key off this machine when possible."
+        );
+    }
+}
+
+#[cfg(unix)]
+fn same_mount_point(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(ma) = fs::metadata(a) else {
+        return false;
+    };
+    let Ok(mb) = fs::metadata(b) else {
+        return false;
+    };
+    ma.dev() == mb.dev()
+}
+
+#[cfg(not(unix))]
+fn same_mount_point(_a: &Path, _b: &Path) -> bool {
+    false
+}
+
+fn bundle_paths(config: &Config, bundle_dir: &Path) -> (PathBuf, PathBuf) {
     (
-        snapshot_root.join(&config.sync.host_file),
-        snapshot_root.join(&config.sync.pub_file),
+        bundle_dir.join(&config.sync.host_file),
+        bundle_dir.join(&config.sync.pub_file),
     )
 }
 
@@ -260,12 +266,47 @@ fn vault_has_overwritable_files(layout: &VaultLayout) -> bool {
         || layout.backup.is_file()
 }
 
-pub fn snapshot_export(config: &Config, snapshot_root: &Path) -> Result<(), CliError> {
-    lifecycle::backup(config)?;
+fn load_sync_identity_file(path: &Path) -> Result<age::x25519::Identity, CliError> {
+    if !path.is_file() {
+        return Err(CliError::Config(format!(
+            "missing sync private key at {}",
+            path.display()
+        )));
+    }
+    let text = fs::read_to_string(path)?;
+    text.parse::<age::x25519::Identity>()
+        .map_err(|e| CliError::Config(e.to_string()))
+}
+
+fn load_or_create_sync_identity(path: &Path) -> Result<age::x25519::Identity, CliError> {
+    if path.is_file() {
+        return load_sync_identity_file(path);
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let identity = age::x25519::Identity::generate();
+    fs::write(
+        path,
+        identity.to_string().expose_secret().as_bytes(),
+    )?;
+    set_private_file_permissions(path)?;
+    Ok(identity)
+}
+
+pub fn snapshot_export(
+    config: &Config,
+    bundle_dir: &Path,
+    identity_path: &Path,
+) -> Result<(), CliError> {
     let layout = VaultLayout::from_config(config);
-    let identity = ensure_snapshot_identity(snapshot_root)?;
+    warn_snapshot_custody(bundle_dir, &layout);
+    lifecycle::backup(config)?;
+    let identity = load_or_create_sync_identity(identity_path)?;
     let recipient = identity.to_public();
-    let (host_path, pub_path) = host_paths(config, snapshot_root);
+    let (archive_path, pub_path) = bundle_paths(config, bundle_dir);
 
     let host_passphrase =
         rpassword::prompt_password("Sync host passphrase: ").map_err(CliError::Io)?;
@@ -274,20 +315,24 @@ pub fn snapshot_export(config: &Config, snapshot_root: &Path) -> Result<(), CliE
     let tar = build_tar(&entries)?;
     let encrypted = encrypt_host_archive(&tar, &host_passphrase, &recipient)?;
 
-    fs::create_dir_all(snapshot_root)?;
-    fs::write(&host_path, encrypted)?;
+    fs::create_dir_all(bundle_dir)?;
+    fs::write(&archive_path, encrypted)?;
     fs::write(&pub_path, recipient.to_string())?;
-    set_private_file_permissions(&host_path)?;
+    set_private_file_permissions(&archive_path)?;
     println!(
-        "Exported snapshot to {} (local identity: {})",
-        host_path.display(),
-        snapshot_identity_path(snapshot_root).display()
+        "Exported snapshot to {} (identity key: {})",
+        archive_path.display(),
+        identity_path.display()
     );
     Ok(())
 }
 
-pub fn snapshot_import(config: &Config, snapshot_root: &Path) -> Result<(), CliError> {
-    materialize_snapshot(config, snapshot_root, None)?;
+pub fn snapshot_import(
+    config: &Config,
+    bundle_dir: &Path,
+    identity_path: &Path,
+) -> Result<(), CliError> {
+    materialize_snapshot(config, bundle_dir, identity_path)?;
     let config = crate::config::load_config()?;
     let layout = VaultLayout::from_config(&config);
     println!("Import complete into {}", layout.root.display());
@@ -299,23 +344,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ensure_snapshot_identity_creates_traversable_sync_dir() {
+    fn load_or_create_sync_identity_writes_private_key() {
         let dir = std::env::temp_dir().join(format!("nvlt-snap-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        let id_path = dir.join("user.key");
 
-        let identity = ensure_snapshot_identity(&dir).unwrap();
-        let sync_dir = dir.join(".nvlt-sync");
-        let id_path = sync_dir.join(SYNC_IDENTITY_FILE);
+        let identity = load_or_create_sync_identity(&id_path).unwrap();
         assert!(id_path.is_file());
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&sync_dir, fs::Permissions::from_mode(0o600)).unwrap();
-        }
-
-        let reloaded = ensure_snapshot_identity(&dir).unwrap();
+        let reloaded = load_or_create_sync_identity(&id_path).unwrap();
         assert_eq!(
             reloaded.to_public().to_string(),
             identity.to_public().to_string()
@@ -324,8 +362,6 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let dir_mode = fs::metadata(&sync_dir).unwrap().permissions().mode() & 0o777;
-            assert_eq!(dir_mode, 0o700);
             let file_mode = fs::metadata(&id_path).unwrap().permissions().mode() & 0o777;
             assert_eq!(file_mode, 0o600);
         }

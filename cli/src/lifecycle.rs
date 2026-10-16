@@ -128,11 +128,11 @@ pub fn init(config: &mut Config) -> Result<(), CliError> {
 }
 
 pub fn init_from_snapshot(
-    snapshot_root: std::path::PathBuf,
-    identity: Option<std::path::PathBuf>,
+    bundle_dir: std::path::PathBuf,
+    identity_path: std::path::PathBuf,
 ) -> Result<(), CliError> {
     let config = crate::config::load_config()?;
-    crate::snapshot::materialize_snapshot(&config, &snapshot_root, identity.as_deref())?;
+    crate::snapshot::materialize_snapshot(&config, &bundle_dir, &identity_path)?;
 
     let config = crate::config::load_config()?;
     let layout = VaultLayout::from_config(&config);
