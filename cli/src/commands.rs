@@ -582,10 +582,9 @@ pub enum SshCmd {
     /// Copy key material into ssh.age
     Register {
         name: String,
+        /// Also store a public key; prompts for the public key file path
         #[arg(long)]
-        path: PathBuf,
-        #[arg(long)]
-        public: Option<PathBuf>,
+        public: bool,
     },
     /// List registered keys
     List,
@@ -602,8 +601,8 @@ pub enum SshCmd {
 pub fn run_ssh(cmd: SshCmd) -> Result<(), CliError> {
     let config = load_config()?;
     match cmd {
-        SshCmd::Register { name, path, public } => {
-            crate::ssh_cmd::register(&config, name, path, public)
+        SshCmd::Register { name, public } => {
+            crate::ssh_cmd::register(&config, name, public)
         }
         SshCmd::List => crate::ssh_cmd::list(&config),
         SshCmd::Activate { name } => crate::ssh_cmd::activate(&config, &name),

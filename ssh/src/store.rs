@@ -94,11 +94,26 @@ mod tests {
         let entry = NewSshEntry {
             name: "a".into(),
             private_pem: "priv".into(),
-            public_openssh: "pub".into(),
+            public_openssh: Some("pub".into()),
             host: None,
             user: None,
         };
         store.add(entry.clone()).unwrap();
         assert!(matches!(store.add(entry), Err(Error::Duplicate { .. })));
+    }
+
+    #[test]
+    fn private_only_entry_has_no_public_key() {
+        let mut store = SshStore::empty();
+        store
+            .add(NewSshEntry {
+                name: "solo".into(),
+                private_pem: "priv".into(),
+                public_openssh: None,
+                host: None,
+                user: None,
+            })
+            .unwrap();
+        assert!(store.list().next().unwrap().public_openssh.is_none());
     }
 }

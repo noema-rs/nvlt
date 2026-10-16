@@ -4,11 +4,15 @@
 Lets users store SSH keypairs inside the encrypted vault, register them by unique name, and temporarily install or remove key material under the user’s `~/.ssh` directory for sessions.
 ## Requirements
 ### Requirement: SSH key registry
-The system SHALL persist SSH keypairs as encrypted entries in a vault store (for example `ssh.age`) keyed by a unique user-chosen **name**. Each entry SHALL record enough metadata to reinstall the same files on activate and to remove only nvlt-managed paths on deactivate.
+The system SHALL persist SSH entries in a vault store (for example `ssh.age`) keyed by a unique user-chosen **name**. Each entry SHALL store the private key material and MAY optionally store an OpenSSH public key. Register SHALL prompt interactively for the private key file path (visible echo). The public key SHALL be stored only when the user passes `--public`, which triggers a separate prompt for the public key file path. Key paths SHALL NOT be required as command-line arguments.
 
-#### Scenario: Register from path
-- **WHEN** the user runs register with a name and a filesystem path to a private key (and optional public key path)
-- **THEN** the key material is encrypted with the vault data key and listed under that name
+#### Scenario: Register private key only
+- **WHEN** the user runs `ssh register <name>` without `--public`
+- **THEN** only the private key is encrypted and listed under that name
+
+#### Scenario: Register with optional public key
+- **WHEN** the user runs `ssh register <name> --public` and supplies both prompted paths
+- **THEN** private and public key material are stored encrypted under that name
 
 #### Scenario: Duplicate name rejected
 - **WHEN** register is invoked with a name that already exists
@@ -26,11 +30,15 @@ The CLI SHALL list registered SSH entries by name and SHALL allow removing an en
 - **THEN** the encrypted entry is deleted and any active installation for that name is deactivated first
 
 ### Requirement: Activate and deactivate in ssh directory
-The CLI SHALL support activating a registered name by writing key files into `~/.ssh` as `{name}` and `{name}.pub` (same basename as the vault entry name), with mode `600` for the private key and `644` for the public key. Deactivate SHALL remove only the paths recorded for that activation.
+The CLI SHALL support activating a registered name by writing the private key into `~/.ssh/{name}` with mode `600`. When a public key is stored, activate SHALL also write `~/.ssh/{name}.pub`. Deactivate SHALL remove only the paths recorded for that activation.
 
-#### Scenario: Activate installs keys
-- **WHEN** the user activates a registered name
-- **THEN** the corresponding key files appear under `~/.ssh` with correct permissions
+#### Scenario: Activate private-only entry
+- **WHEN** the user activates a name with no stored public key
+- **THEN** only the private key file appears under `~/.ssh` with correct permissions
+
+#### Scenario: Activate with public key
+- **WHEN** the user activates a name that includes a stored public key
+- **THEN** both `{name}` and `{name}.pub` appear under `~/.ssh` with correct permissions
 
 #### Scenario: Deactivate cleans nvlt paths only
 - **WHEN** the user deactivates a name
@@ -46,4 +54,3 @@ The CLI SHALL expose an `open` (or equivalent) subcommand that activates a named
 #### Scenario: Open with stored host
 - **WHEN** open is invoked for an entry with host metadata
 - **THEN** the user receives a ready-to-run ssh command line using the activated key paths
-

@@ -51,7 +51,8 @@ nvlt age decrypt -i key.txt -f out.age          # decrypt with an identity
 ## SSH keys
 
 ```bash
-nvlt ssh register mykey --path ~/.ssh/id_ed25519
+nvlt ssh register mykey
+# optional: nvlt ssh register mykey --public
 nvlt ssh activate mykey
 nvlt ssh deactivate mykey
 ```
