@@ -95,7 +95,7 @@ impl EmbeddedTotp {
             .to_bytes()
             .map_err(|_| vault_core::Error::InvalidTotpSeed)?;
 
-        TOTP::new(
+        Ok(TOTP::new_unchecked(
             self.algorithm.to_totp_rs(),
             usize::from(self.digits),
             0,
@@ -103,9 +103,7 @@ impl EmbeddedTotp {
             secret,
             None,
             "vault".to_string(),
-        )
-        .map_err(|_| vault_core::Error::InvalidTotpSeed)
-        .map_err(Error::from)
+        ))
     }
 
     fn generate_current(&self) -> Result<TotpCode, Error> {

@@ -121,18 +121,35 @@ impl TotpEntry {
             .to_bytes()
             .map_err(|_| vault_core::Error::InvalidTotpSeed)?;
 
-        TOTP::new(
+        Ok(build_totp_unchecked(
             self.algorithm.to_totp_rs(),
-            usize::from(self.digits),
-            0,
-            u64::from(self.period),
+            self.digits,
+            self.period,
             secret,
             Some(self.site.clone()),
             self.account.clone(),
-        )
-        .map_err(|_| vault_core::Error::InvalidTotpSeed)
-        .map_err(Error::from)
+        ))
     }
+}
+
+/// Real services (e.g. GitHub) often use 80-bit secrets; `TOTP::new` rejects those.
+fn build_totp_unchecked(
+    algorithm: Algorithm,
+    digits: u8,
+    period: u32,
+    secret: Vec<u8>,
+    issuer: Option<String>,
+    account: String,
+) -> TOTP {
+    TOTP::new_unchecked(
+        algorithm,
+        usize::from(digits),
+        0,
+        u64::from(period),
+        secret,
+        issuer,
+        account,
+    )
 }
 
 impl NewTotpEntry {
@@ -153,7 +170,7 @@ impl NewTotpEntry {
 }
 
 pub fn parse_otpauth_uri(uri: &str) -> Result<NewTotpEntry, Error> {
-    let totp = TOTP::from_url(uri).map_err(|_| Error::InvalidOtpAuth)?;
+    let totp = TOTP::from_url_unchecked(uri).map_err(|_| Error::InvalidOtpAuth)?;
     let site = totp
         .issuer
         .clone()
@@ -201,5 +218,26 @@ mod tests {
     #[test]
     fn prepare_seed_rejects_garbage() {
         assert!(prepare_seed("not-a-valid-seed!!!").is_err());
+    }
+
+    /// GitHub-style 16-character base32 secrets are 80 bits (below RFC 6238 minimum).
+    #[test]
+    fn github_length_secret_add_and_code() {
+        let seed = "JBSWY3DPEHPK3PXP";
+        let entry = default_entry("GitHub", "user", seed)
+            .into_entry(Utc::now())
+            .unwrap();
+        assert_eq!(entry.seed, seed);
+        assert!(entry.current_code().unwrap().code.len() == 6);
+    }
+
+    #[test]
+    fn github_length_otpauth_uri_import() {
+        let uri = "otpauth://totp/GitHub:user?secret=JBSWY3DPEHPK3PXP&issuer=GitHub";
+        let parsed = parse_otpauth_uri(uri).unwrap();
+        assert_eq!(parsed.seed, "JBSWY3DPEHPK3PXP");
+        assert_eq!(parsed.site, "GitHub");
+        assert_eq!(parsed.account, "user");
+        parsed.into_entry(Utc::now()).unwrap();
     }
 }

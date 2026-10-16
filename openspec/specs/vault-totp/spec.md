@@ -5,7 +5,7 @@ Manages standalone TOTP seeds for services without associated passwords, stored 
 ## Requirements
 
 ### Requirement: Standalone entries
-The system SHALL store entries uniquely keyed by `(site, account)` (CLI: issuer and name) with seed, algorithm, digits, and period in JSON version 1 inside `totp.age`. Multiple names for the same issuer SHALL be allowed. Seeds SHALL be normalized (trim, strip whitespace, uppercase base32) on add and get; invalid base32 SHALL be rejected on add.
+The system SHALL store entries uniquely keyed by `(site, account)` (CLI: issuer and name) with seed, algorithm, digits, and period in JSON version 1 inside `totp.age`. Multiple names for the same issuer SHALL be allowed. Seeds SHALL be normalized (trim, strip whitespace, uppercase base32) on add and get; invalid base32 SHALL be rejected on add. Short issuer secrets (e.g. 80-bit GitHub base32) SHALL be accepted when building TOTP (RFC minimum is not enforced at construction).
 
 #### Scenario: Site without password entry
 - **WHEN** a user adds a standalone TOTP for a site

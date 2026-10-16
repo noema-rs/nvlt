@@ -11,7 +11,7 @@ fn build_totp(seed: &SecretString) -> Result<TOTP, Error> {
         .to_bytes()
         .map_err(|_| Error::InvalidTotpSeed)?;
 
-    TOTP::new(
+    Ok(TOTP::new_unchecked(
         Algorithm::SHA1,
         DEFAULT_DIGITS,
         0,
@@ -19,8 +19,7 @@ fn build_totp(seed: &SecretString) -> Result<TOTP, Error> {
         secret,
         None,
         "vault".to_string(),
-    )
-    .map_err(|_| Error::InvalidTotpSeed)
+    ))
 }
 
 /// Verify a 6-digit code for the current time step only.
