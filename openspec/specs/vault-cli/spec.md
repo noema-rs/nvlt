@@ -66,10 +66,10 @@ The system SHALL support `nvlt system config show`, `config set <key> <value>`, 
 - **THEN** subsequent commands use the new vault directory
 
 ### Requirement: Shell wrapper for env load
-Documentation SHALL provide a shell function that intercepts `nvlt env load <profile>` and evaluates export output from `nvlt env export`.
+The CLI SHALL provide `nvlt env hook` that prints a shell function intercepting `nvlt env load <profile>` and evaluating export output from the real `nvlt env load` subcommand. Documentation SHALL describe installing the hook or using `eval "$(nvlt env load <profile>)"`.
 
 #### Scenario: Load profile
-- **WHEN** the wrapper is installed and load is invoked
+- **WHEN** the hook is installed and load is invoked
 - **THEN** variables from the profile are set in the current shell
 
 ### Requirement: CLI error presentation

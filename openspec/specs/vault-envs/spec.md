@@ -32,12 +32,19 @@ The CLI SHALL provide `env import <profile>` to merge variables from a dotenv-st
 - **WHEN** import reads KEY=VALUE lines from the given file
 - **THEN** each key is set on the profile and persisted encrypted
 
-### Requirement: Export to stdout
-The system SHALL print shell `export KEY="value"` lines to stdout for a profile without writing plaintext files itself.
+### Requirement: Export to file
+The CLI SHALL write dotenv-style `KEY="value"` lines to a user-supplied file path for a profile, confirming before overwriting an existing file.
 
 #### Scenario: Export format
-- **WHEN** export is invoked for a profile with variables
-- **THEN** each variable appears as a valid export statement on stdout
+- **WHEN** export is invoked for a profile with variables and a destination path
+- **THEN** each variable appears as a valid dotenv line in the written file
+
+### Requirement: Load into shell
+The CLI SHALL provide `env load` that prints shell `export KEY="value"` lines to stdout when stdout is not a terminal (for `eval`), and SHALL provide `env hook` that prints a shell function intercepting `env load` in interactive shells.
+
+#### Scenario: Hook install
+- **WHEN** the user evaluates `nvlt env hook` in bash or zsh
+- **THEN** subsequent `nvlt env load <profile>` calls set variables in the current shell
 
 ### Requirement: Profile removal
 Removing a profile SHALL require confirmation and delete the profile's encrypted file.

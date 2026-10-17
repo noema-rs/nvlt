@@ -226,7 +226,7 @@ Inside the vault:       Website TOTPs (site seeds)
 
 The vault **does not write plaintext secrets by itself**, but plaintext can still reach disk:
 
-- **stdout and redirects:** `nvlt env export profile > .env.local` writes plaintext. User responsibility.
+- **Export to disk:** `nvlt env export profile .env.local` writes a dotenv file (plaintext). User responsibility.
 - **Swap:** process memory may hit unencrypted swap. Prefer encrypted swap or none.
 - **Core dumps:** crashes may dump memory. The CLI attempts to disable core dumps.
 - **Editor temp files:** future `$EDITOR` integration may write temps.
@@ -399,19 +399,18 @@ nvlt env set <profile> <key> <value>
 nvlt env unset <profile> <key>
 nvlt env add <profile>
 nvlt env del <profile>
-nvlt env export <profile>
+nvlt env export <profile> <file>
 nvlt env load <profile>
+nvlt env hook
 ```
 
 **Example:**
 
 ```bash
-$ nvlt env export project-x
-export DATABASE_URL="postgres://localhost:5432/db"
-export API_KEY="sk-abc123"
-export LOG_LEVEL="info"
+$ nvlt env export project-x .env.local
+Wrote 3 variable(s) from profile "project-x" to .env.local.
 
-$ nvlt env export project-x > .env.local   # plaintext on disk — your choice
+$ eval "$(nvlt env load project-x)"   # or install `nvlt env hook` in .bashrc
 ```
 
 ### Files commands
@@ -668,7 +667,7 @@ nvlt pass get github.com work@company.com
 
 ```bash
 nvlt env set project-x API_KEY sk-abc123
-nvlt env export project-x > .env.local   # resulting file is plaintext
+nvlt env export project-x .env.local   # resulting file is plaintext
 ```
 
 ### Daily use — files
@@ -725,17 +724,13 @@ nvlt totp get 2fa-only.example my-account
 
 ## Shell integration
 
-For transparent `nvlt env load`, add a wrapper to `.bashrc` / `.zshrc`:
+For transparent `nvlt env load`, install the hook in `.bashrc` / `.zshrc`:
 
 ```bash
-nvlt() {
-    if [[ "$1" == "env" && "$2" == "load" ]]; then
-        eval "$(command nvlt env export "$3")"
-    else
-        command nvlt "$@"
-    fi
-}
+eval "$(nvlt env hook)"
 ```
+
+Or run `eval "$(nvlt env load <profile>)"` once per shell session.
 
 After `nvlt unlock --for 10m`, subcommands `pass`, `env`, `files`, `totp`, and `ssh` reuse the cached key via the agent (`~/.cache/nvlt/agent/`).
 
@@ -835,7 +830,7 @@ See workspace `Cargo.toml` for pinned versions (`hkdf`, `sha2`, `tar`, `age-core
 | **Session** | `unlock`, `lock` |
 | **Age** | `age encrypt`, `age decrypt`, `age identity` |
 | **Passwords** | `pass search`, `pass get`, `pass ls`, `pass add`, `pass edit`, `pass del` |
-| **Envs** | `env ls`, `env get`, `env set`, `env unset`, `env add`, `env del`, `env export`, `env load` |
+| **Envs** | `env ls`, `env get`, `env set`, `env unset`, `env add`, `env del`, `env export`, `env load`, `env hook` |
 | **Files** | `files encrypt`, `files decrypt`, `files ls`, `files del` |
 | **TOTP** | `totp add`, `totp ls`, `totp get`, `totp del`, `totp export`, `totp import` |
 | **SSH** | `ssh add`, `ssh ls`, `ssh activate`, `ssh deactivate`, `ssh del`, `ssh open` |

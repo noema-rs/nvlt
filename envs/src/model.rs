@@ -25,14 +25,22 @@ impl EnvProfileDocument {
     }
 }
 
-/// Format a single `export KEY="value"` line with POSIX shell escaping.
-pub fn export_line(key: &str, value: &str) -> String {
-    let escaped = value
+fn shell_escape_value(value: &str) -> String {
+    value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('$', "\\$")
-        .replace('`', "\\`");
-    format!("export {key}=\"{escaped}\"")
+        .replace('`', "\\`")
+}
+
+/// Format a single `export KEY="value"` line with POSIX shell escaping.
+pub fn export_line(key: &str, value: &str) -> String {
+    format!("export {key}=\"{}\"", shell_escape_value(value))
+}
+
+/// Format a single `KEY="value"` dotenv line with the same escaping as export.
+pub fn dotenv_line(key: &str, value: &str) -> String {
+    format!("{key}=\"{}\"", shell_escape_value(value))
 }
 
 #[cfg(test)]

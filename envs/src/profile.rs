@@ -108,6 +108,14 @@ impl ProfileStore {
             .map(|v| export_line(&v.key, &v.value))
             .collect()
     }
+
+    pub fn dotenv_lines(&self) -> Vec<String> {
+        self.document
+            .vars
+            .iter()
+            .map(|v| crate::model::dotenv_line(&v.key, &v.value))
+            .collect()
+    }
 }
 
 /// Directory-backed collection of profile files (`<name>.age`).

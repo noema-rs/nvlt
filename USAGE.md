@@ -158,33 +158,21 @@ Encrypted profiles (one `.age` file per profile).
 | `nvlt env unset <profile> <key>` | Remove one key; asks for confirmation |
 | `nvlt env add <profile>` | Empty profile |
 | `nvlt env del <profile>` | Delete profile; asks for confirmation |
-| `nvlt env export <profile>` | Print `export KEY="value"` lines |
-| `nvlt env load <profile>` | Same output as `export` (see shell integration below) |
+| `nvlt env export <profile> <file>` | Write dotenv `KEY="value"` lines to a file |
+| `nvlt env load <profile>` | Apply profile to the shell (via hook or `eval`) |
+| `nvlt env hook` | Print shell function for transparent `env load` |
 
 **Examples:**
 
 ```bash
 nvlt env set project-x DATABASE_URL postgres://localhost/db
 nvlt env get project-x DATABASE_URL
-nvlt env export project-x
-nvlt env export project-x > .env.local   # plaintext on disk — your choice
+nvlt env export project-x .env.local   # plaintext on disk — your choice
 ```
 
 ### Load variables into the current shell
 
-`env load` only prints exports. To **evaluate** them in bash/zsh, add a wrapper (from [INIT.md](./INIT.md)):
-
-```bash
-nvlt() {
-    if [[ "$1" == "env" && "$2" == "load" ]]; then
-        eval "$(command nvlt env export "$3")"
-    else
-        command nvlt "$@"
-    fi
-}
-```
-
-Then: `nvlt unlock --for 10m` and `nvlt env load project-x`.
+A subprocess cannot modify your shell environment. Use **`eval "$(nvlt env hook)"`** in `.bashrc` / `.zshrc` (see [INIT.md](./INIT.md)), then `nvlt env load project-x` after `nvlt unlock --for 10m`. Or run **`eval "$(nvlt env load project-x)"`** once per session.
 
 ---
 

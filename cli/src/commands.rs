@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::Subcommand;
@@ -70,10 +71,15 @@ pub enum EnvCmd {
     /// Delete a profile (confirms)
     #[command(name = "del")]
     Remove { profile: String },
-    /// Print export KEY=... lines to stdout
-    Export { profile: String },
-    /// Shell wrapper evaluates export output (see INIT.md)
+    /// Write KEY=VALUE lines to a dotenv file
+    Export {
+        profile: String,
+        path: PathBuf,
+    },
+    /// Print export statements for eval or the env hook (see INIT.md)
     Load { profile: String },
+    /// Print a shell function so `env load` applies in the current shell
+    Hook,
     /// Interactively set variables on a profile
     Edit { profile: String },
     /// Import KEY=VALUE lines from a file (path prompted when omitted)
@@ -295,8 +301,14 @@ pub fn run_env(cmd: EnvCmd) -> Result<(), CliError> {
             confirm_or_cancel(&vault.prepare_remove_profile(&profile)?.prompt)?;
             vault.remove_profile(&profile)?;
         }
-        EnvCmd::Export { profile } | EnvCmd::Load { profile } => {
-            env_export_profile(&config, &layout, &vault, &profile)?;
+        EnvCmd::Export { profile, path } => {
+            env_export_to_file(&config, &layout, &vault, &profile, &path)?;
+        }
+        EnvCmd::Load { profile } => {
+            env_load_profile(&config, &layout, &vault, &profile)?;
+        }
+        EnvCmd::Hook => {
+            print_env_shell_hook();
         }
         EnvCmd::Edit { profile } => {
             let session = UnlockSession::unlock_data_key(&config, &layout)?;
@@ -332,7 +344,7 @@ pub fn run_env(cmd: EnvCmd) -> Result<(), CliError> {
     Ok(())
 }
 
-fn env_export_profile(
+fn env_load_profile(
     config: &crate::config::Config,
     layout: &VaultLayout,
     vault: &EnvVault,
@@ -340,10 +352,64 @@ fn env_export_profile(
 ) -> Result<(), CliError> {
     let session = UnlockSession::unlock_data_key(config, layout)?;
     let store = vault.load_profile(profile, &session.data_key)?;
-    for line in store.export_lines() {
+    let lines = store.export_lines();
+    if std::io::stdout().is_terminal() {
+        eprintln!(
+            "Profile \"{profile}\" was not loaded into this shell (a subprocess cannot set your environment)."
+        );
+        eprintln!("Run: eval \"$(nvlt env load {profile})\"");
+        eprintln!("Or install the hook: eval \"$(nvlt env hook)\"  # add to .bashrc / .zshrc");
+        return Ok(());
+    }
+    for line in lines {
         println!("{line}");
     }
     Ok(())
+}
+
+fn env_export_to_file(
+    config: &crate::config::Config,
+    layout: &VaultLayout,
+    vault: &EnvVault,
+    profile: &str,
+    path: &std::path::Path,
+) -> Result<(), CliError> {
+    let session = UnlockSession::unlock_data_key(config, layout)?;
+    let store = vault.load_profile(profile, &session.data_key)?;
+    if path.exists() {
+        confirm_or_cancel(&format!(
+            "⚠️  You are about to write profile \"{profile}\" to: {}\n\
+                If the file already exists, it will be OVERWRITTEN.\n\
+             \n\
+                Continue? [y/N]: ",
+            path.display()
+        ))?;
+    }
+    let lines = store.dotenv_lines();
+    let count = lines.len();
+    let mut body = lines.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    std::fs::write(path, body).map_err(CliError::Io)?;
+    println!(
+        "Wrote {count} variable(s) from profile \"{profile}\" to {}.",
+        path.display()
+    );
+    Ok(())
+}
+
+fn print_env_shell_hook() {
+    println!(
+        r#"# nvlt env hook — eval this in .bashrc or .zshrc
+nvlt() {{
+  if [ "$1" = "env" ] && [ "$2" = "load" ] && [ -n "$3" ]; then
+    eval "$(command nvlt env load "$3")"
+    return $?
+  fi
+  command nvlt "$@"
+}}"#
+    );
 }
 
 pub fn run_files(cmd: FilesCmd) -> Result<(), CliError> {
