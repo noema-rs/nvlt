@@ -368,10 +368,10 @@ Lifecycle and admin commands live under `system`; data commands stay top level. 
 nvlt pass search <domain>
 nvlt pass search <domain> --user <username>
 nvlt pass get <domain> <username>
-nvlt pass list
+nvlt pass ls
 nvlt pass add <domain>
 nvlt pass edit <domain> <username>
-nvlt pass remove <domain> <username>
+nvlt pass del <domain> <username>
 ```
 
 **Example:**
@@ -392,13 +392,13 @@ Fields:
 ### Env commands
 
 ```bash
-nvlt env list
-nvlt env list <profile>
+nvlt env ls
+nvlt env ls <profile>
 nvlt env get <profile> <key>
 nvlt env set <profile> <key> <value>
 nvlt env unset <profile> <key>
 nvlt env add <profile>
-nvlt env remove <profile>
+nvlt env del <profile>
 nvlt env export <profile>
 nvlt env load <profile>
 ```
@@ -420,17 +420,17 @@ $ nvlt env export project-x > .env.local   # plaintext on disk — your choice
 nvlt files encrypt <path>
 nvlt files decrypt <name> <path>
 nvlt files decrypt <name> --stdout
-nvlt files list
-nvlt files remove <name>
+nvlt files ls
+nvlt files del <name>
 ```
 
 ### Standalone TOTP commands
 
 ```bash
 nvlt totp add <issuer>
-nvlt totp list
+nvlt totp ls
 nvlt totp get <issuer> <name>
-nvlt totp remove <issuer> <name>
+nvlt totp del <issuer> <name>
 nvlt totp export <issuer> <name> <path>
 nvlt totp import <path>
 ```
@@ -467,11 +467,11 @@ nvlt lock
 ### SSH commands (`ssh.age`)
 
 ```bash
-nvlt ssh register <name> [--public]
-nvlt ssh list
+nvlt ssh add <name> [--public]
+nvlt ssh ls
 nvlt ssh activate <name>
 nvlt ssh deactivate <name>
-nvlt ssh remove <name>
+nvlt ssh del <name>
 nvlt ssh open <name>
 ```
 
@@ -481,7 +481,7 @@ nvlt ssh open <name>
 
 Any operation that **modifies** or **deletes** existing data prompts for explicit confirmation.
 
-### `nvlt pass remove <domain> <username>`
+### `nvlt pass del <domain> <username>`
 
 ```
 ⚠️  You are about to delete the entry:
@@ -504,7 +504,7 @@ Any operation that **modifies** or **deletes** existing data prompts for explici
     Continue? [y/N]:
 ```
 
-### `nvlt env remove <profile>`
+### `nvlt env del <profile>`
 
 ```
 ⚠️  You are about to delete the env profile: project-x
@@ -543,7 +543,7 @@ Any operation that **modifies** or **deletes** existing data prompts for explici
     Continue? [y/N]:
 ```
 
-### `nvlt files remove <name>`
+### `nvlt files del <name>`
 
 ```
 ⚠️  You are about to delete the encrypted file: document.pdf
@@ -552,7 +552,7 @@ Any operation that **modifies** or **deletes** existing data prompts for explici
     Delete this file? [y/N]:
 ```
 
-### `nvlt totp remove <site>`
+### `nvlt totp del <site>`
 
 ```
 ⚠️  You are about to delete the TOTP entry for: 2fa-only.example
@@ -834,8 +834,8 @@ See workspace `Cargo.toml` for pinned versions (`hkdf`, `sha2`, `tar`, `age-core
 | **Config** | `system config show`, `system config set`, `system config path` |
 | **Session** | `unlock`, `lock` |
 | **Age** | `age encrypt`, `age decrypt`, `age identity` |
-| **Passwords** | `pass search`, `pass get`, `pass list`, `pass add`, `pass edit`, `pass remove` |
-| **Envs** | `env list`, `env get`, `env set`, `env unset`, `env add`, `env remove`, `env export`, `env load` |
-| **Files** | `files encrypt`, `files decrypt`, `files list`, `files remove` |
-| **TOTP** | `totp add`, `totp list`, `totp get`, `totp remove`, `totp export`, `totp import` |
-| **SSH** | `ssh register`, `ssh list`, `ssh activate`, `ssh deactivate`, `ssh remove`, `ssh open` |
+| **Passwords** | `pass search`, `pass get`, `pass ls`, `pass add`, `pass edit`, `pass del` |
+| **Envs** | `env ls`, `env get`, `env set`, `env unset`, `env add`, `env del`, `env export`, `env load` |
+| **Files** | `files encrypt`, `files decrypt`, `files ls`, `files del` |
+| **TOTP** | `totp add`, `totp ls`, `totp get`, `totp del`, `totp export`, `totp import` |
+| **SSH** | `ssh add`, `ssh ls`, `ssh activate`, `ssh deactivate`, `ssh del`, `ssh open` |

@@ -91,11 +91,11 @@ The CLI SHALL implement `nvlt system snapshot export [directory]` and `nvlt syst
 - **THEN** the user sees a confirmation prompt and the command aborts if they do not accept
 
 ### Requirement: SSH CLI
-The CLI SHALL implement `nvlt ssh` with at least `register`, `list`, `activate`, `deactivate`, and `remove` subcommands keyed by entry name.
+The CLI SHALL implement `nvlt ssh` with at least `add`, `ls`, `activate`, `deactivate`, and `del` subcommands keyed by entry name.
 
 #### Scenario: SSH help
 - **WHEN** the user runs `nvlt ssh --help`
-- **THEN** register and activate subcommands are listed
+- **THEN** add and activate subcommands are listed
 
 ### Requirement: Age CLI
 The CLI SHALL implement `nvlt age encrypt`, `nvlt age decrypt`, and `nvlt age identity` as a thin passthrough over the age library, as specified in vault-age.

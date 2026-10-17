@@ -31,6 +31,7 @@ pub enum ConfigCmd {
 #[derive(Subcommand, Debug)]
 pub enum PassCmd {
     /// List all entries
+    #[command(name = "ls")]
     List,
     /// Search by domain; optional --user filter
     Search {
@@ -45,12 +46,14 @@ pub enum PassCmd {
     /// Interactive edit (confirms overwrite)
     Edit { domain: String, username: String },
     /// Delete one entry (confirms)
+    #[command(name = "del")]
     Remove { domain: String, username: String },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum EnvCmd {
     /// List profiles, or keys in one profile
+    #[command(name = "ls")]
     List { profile: Option<String> },
     /// Get one variable value
     Get { profile: String, key: String },
@@ -65,6 +68,7 @@ pub enum EnvCmd {
     /// Create an empty profile
     Add { profile: String },
     /// Delete a profile (confirms)
+    #[command(name = "del")]
     Remove { profile: String },
     /// Print export KEY=... lines to stdout
     Export { profile: String },
@@ -82,6 +86,7 @@ pub enum EnvCmd {
 #[derive(Subcommand, Debug)]
 pub enum FilesCmd {
     /// List encrypted filenames in the vault
+    #[command(name = "ls")]
     List,
     /// Encrypt a file into files/ (confirms overwrite)
     Encrypt {
@@ -99,18 +104,21 @@ pub enum FilesCmd {
         stdout: bool,
     },
     /// Delete encrypted file (confirms)
+    #[command(name = "del")]
     Remove { name: String },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum TotpCmd {
     /// List standalone TOTP entries (issuer and name)
+    #[command(name = "ls")]
     List,
     /// Add a standalone seed for an issuer
     Add { issuer: String },
     /// Show current 6-digit code
     Get { issuer: String, name: String },
     /// Remove entry (confirms)
+    #[command(name = "del")]
     Remove { issuer: String, name: String },
     /// Write QR image for migration
     Export {
@@ -580,6 +588,7 @@ pub fn run_snapshot(cmd: SnapshotCmd) -> Result<(), CliError> {
 #[derive(Subcommand, Debug)]
 pub enum SshCmd {
     /// Copy key material into ssh.age
+    #[command(name = "add")]
     Register {
         name: String,
         /// Also store a public key; prompts for the public key file path
@@ -587,12 +596,14 @@ pub enum SshCmd {
         public: bool,
     },
     /// List registered keys
+    #[command(name = "ls")]
     List,
     /// Symlink private key into ~/.ssh (tracked for deactivate)
     Activate { name: String },
     /// Remove symlinks created by activate
     Deactivate { name: String },
     /// Remove from ssh.age (confirms)
+    #[command(name = "del")]
     Remove { name: String },
     /// Run ssh using stored host/user when set
     Open { name: String },

@@ -7,11 +7,11 @@ Lets users store SSH keypairs inside the encrypted vault, register them by uniqu
 The system SHALL persist SSH entries in a vault store (for example `ssh.age`) keyed by a unique user-chosen **name**. Each entry SHALL store the private key material and MAY optionally store an OpenSSH public key. Register SHALL prompt interactively for the private key file path (visible echo). The public key SHALL be stored only when the user passes `--public`, which triggers a separate prompt for the public key file path. Key paths SHALL NOT be required as command-line arguments.
 
 #### Scenario: Register private key only
-- **WHEN** the user runs `ssh register <name>` without `--public`
+- **WHEN** the user runs `ssh add <name>` without `--public`
 - **THEN** only the private key is encrypted and listed under that name
 
 #### Scenario: Register with optional public key
-- **WHEN** the user runs `ssh register <name> --public` and supplies both prompted paths
+- **WHEN** the user runs `ssh add <name> --public` and supplies both prompted paths
 - **THEN** private and public key material are stored encrypted under that name
 
 #### Scenario: Duplicate name rejected

@@ -31,7 +31,7 @@ nvlt system panic                   # emergency local wipe
 
 ```bash
 nvlt unlock --for 10m
-nvlt pass list
+nvlt pass ls
 nvlt lock
 ```
 
@@ -51,8 +51,8 @@ nvlt age decrypt -i key.txt -f out.age          # decrypt with an identity
 ## SSH keys
 
 ```bash
-nvlt ssh register mykey
-# optional: nvlt ssh register mykey --public
+nvlt ssh add mykey
+# optional: nvlt ssh add mykey --public
 nvlt ssh activate mykey
 nvlt ssh deactivate mykey
 ```

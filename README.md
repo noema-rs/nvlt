@@ -25,7 +25,7 @@ cargo install --path cli        # optional
 
 nvlt system init
 nvlt unlock --for 10m
-nvlt pass list
+nvlt pass ls
 ```
 
 New machine with a git clone of the snapshot repo (copy `.nvlt-sync/host.key` from the export machine or use `--identity`, and bring the main unlock key):

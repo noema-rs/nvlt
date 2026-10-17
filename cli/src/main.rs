@@ -91,7 +91,7 @@ enum Command {
         #[command(subcommand)]
         cmd: TotpCmd,
     },
-    /// SSH keys in ssh.age (register, activate under ~/.ssh)
+    /// SSH keys in ssh.age (add, activate under ~/.ssh)
     Ssh {
         #[command(subcommand)]
         cmd: SshCmd,

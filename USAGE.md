@@ -57,12 +57,12 @@ Store keyed by **(domain, username)**. One domain can have many users. Each entr
 
 | Command | Description |
 |---------|-------------|
-| `nvlt pass list` | List `domain (username)` |
+| `nvlt pass ls` | List `domain (username)` |
 | `nvlt pass search <domain> [--user <username>]` | Search by domain; optional user filter |
 | `nvlt pass get <domain> <username>` | Show password, current TOTP (if any), notes, fields |
 | `nvlt pass add <domain>` | Interactive add (username, password, optional TOTP, notes, fields) |
 | `nvlt pass edit <domain> <username>` | Interactive edit; asks for confirmation |
-| `nvlt pass remove <domain> <username>` | Delete entry; asks for confirmation |
+| `nvlt pass del <domain> <username>` | Delete entry; asks for confirmation |
 
 **Examples:**
 
@@ -94,10 +94,10 @@ Second-factor codes stored **separately** from login passwords (when there is no
 
 | Command | Description |
 |---------|-------------|
-| `nvlt totp list` | Registered entries (`issuer` + `name`) |
+| `nvlt totp ls` | Registered entries (`issuer` + `name`) |
 | `nvlt totp add <issuer>` | Interactive: name + base32 seed (or `otpauth://` URI) |
 | `nvlt totp get <issuer> <name>` | Current 6-digit code and seconds remaining |
-| `nvlt totp remove <issuer> <name>` | Delete entry; asks for confirmation |
+| `nvlt totp del <issuer> <name>` | Delete entry; asks for confirmation |
 | `nvlt totp export <issuer> <name> <path>` | Write QR image for migration |
 | `nvlt totp import <path>` | Import from QR or seed file |
 
@@ -123,18 +123,18 @@ Private/public key material in `ssh.age`. **Activate** writes keys to `~/.ssh/nv
 
 | Command | Description |
 |---------|-------------|
-| `nvlt ssh register <name> [--public]` | Register in vault; prompts for private key path; `--public` also prompts for public key path |
-| `nvlt ssh list` | Registered names |
+| `nvlt ssh add <name> [--public]` | Register in vault; prompts for private key path; `--public` also prompts for public key path |
+| `nvlt ssh ls` | Registered names |
 | `nvlt ssh activate <name>` | Write keys under `~/.ssh/` |
 | `nvlt ssh deactivate <name>` | Remove files created by `activate` |
-| `nvlt ssh remove <name>` | Remove from vault; asks for confirmation |
+| `nvlt ssh del <name>` | Remove from vault; asks for confirmation |
 | `nvlt ssh open <name>` | Activate and print `ssh` command if host/user are set, else key path |
 
 **Examples:**
 
 ```bash
-nvlt ssh register work
-nvlt ssh register work --public
+nvlt ssh add work
+nvlt ssh add work --public
 nvlt ssh activate work
 ssh -i ~/.ssh/nvlt_work user@server
 nvlt ssh deactivate work
@@ -151,13 +151,13 @@ Encrypted profiles (one `.age` file per profile).
 
 | Command | Description |
 |---------|-------------|
-| `nvlt env list` | List profiles |
-| `nvlt env list <profile>` | List keys in a profile |
+| `nvlt env ls` | List profiles |
+| `nvlt env ls <profile>` | List keys in a profile |
 | `nvlt env get <profile> <key>` | One variable value |
 | `nvlt env set <profile> <key> <value>` | Set variable; creates profile if needed |
 | `nvlt env unset <profile> <key>` | Remove one key; asks for confirmation |
 | `nvlt env add <profile>` | Empty profile |
-| `nvlt env remove <profile>` | Delete profile; asks for confirmation |
+| `nvlt env del <profile>` | Delete profile; asks for confirmation |
 | `nvlt env export <profile>` | Print `export KEY="value"` lines |
 | `nvlt env load <profile>` | Same output as `export` (see shell integration below) |
 
@@ -194,11 +194,11 @@ Encrypt arbitrary files into `{vault}/files/` (stored name = original file name)
 
 | Command | Description |
 |---------|-------------|
-| `nvlt files list` | Encrypted file names |
+| `nvlt files ls` | Encrypted file names |
 | `nvlt files encrypt <path>` | Encrypt; confirms (warns on overwrite) |
 | `nvlt files decrypt <name> <output_path>` | Decrypt to disk; confirms if overwriting |
 | `nvlt files decrypt <name> --stdout` | Decrypt to stdout (pipes, viewers) |
-| `nvlt files remove <name>` | Delete encrypted blob; asks for confirmation |
+| `nvlt files del <name>` | Delete encrypted blob; asks for confirmation |
 
 **Examples:**
 
