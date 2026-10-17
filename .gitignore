@@ -3,3 +3,5 @@
 .opencode
 opencode.jsonc
 /target/
+/result
+/result-*

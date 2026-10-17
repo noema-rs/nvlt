@@ -1,52 +1,85 @@
 {
-  description = "Dev shell";
+  description = "nvlt — age-based secret manager CLI";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
 
   outputs =
+    { self, nixpkgs }:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+
+      forAllSystems =
+        f: nixpkgs.lib.genAttrs systems (
+          system:
+          f {
+            inherit system;
+            pkgs = import nixpkgs {
+              inherit system;
+              overlays = [ ];
+            };
+          }
+        );
+
+      mkNvlt = pkgs: pkgs.callPackage ./package.nix { };
+
+      packages = forAllSystems (
+        { pkgs, ... }:
+        let
+          nvlt = mkNvlt pkgs;
+        in
+        {
+          default = nvlt;
+          inherit nvlt;
+        }
+      );
+    in
     {
-      self,
-      nixpkgs,
-      flake-utils,
-    }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-      in
-      {
-        devShells.default = pkgs.mkShellNoCC {
-          packages = with pkgs; [
-            rustc
-            cargo
-            rust-analyzer
-            rustfmt
-            clippy
+      inherit packages;
 
-            cargo-watch
-            cargo-edit
-          ];
+      checks = packages;
 
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-          ];
-
-          buildInputs = with pkgs; [
-            openssl
-          ];
-
-          env = {
-            OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
-            OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
-            PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
-            RUST_BACKTRACE = "1";
+      apps = forAllSystems (
+        { system, ... }:
+        {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/nvlt";
           };
+        }
+      );
 
-          shellHook = ''
-            echo "🦐 Rust dev shell ready"
-          '';
-        };
-      }
-    );
+      devShells = forAllSystems (
+        { pkgs, ... }:
+        {
+          default = pkgs.mkShellNoCC {
+            inputsFrom = [ (mkNvlt pkgs) ];
+
+            packages = with pkgs; [
+              rustc
+              cargo
+              rust-analyzer
+              rustfmt
+              clippy
+              cargo-watch
+              cargo-edit
+            ];
+
+            env.RUST_BACKTRACE = "1";
+
+            shellHook = ''
+              echo "Rust dev shell ready"
+            '';
+          };
+        }
+      );
+
+      overlays.default = final: prev: {
+        nvlt = final.callPackage ./package.nix { };
+      };
+
+      formatter = forAllSystems ({ pkgs, ... }: pkgs.nixfmt-rfc-style);
+    };
 }
