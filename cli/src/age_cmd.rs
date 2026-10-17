@@ -346,6 +346,34 @@ fn print_public_key(path: &std::path::Path) -> Result<(), CliError> {
 mod tests {
     use super::*;
 
+    /// Fixed scrypt cost for unit tests (see `age` `protocol::scrypt_round_trip`).
+    const TEST_SCRYPT_LOG_N: u8 = 10;
+
+    fn encrypt_bytes_with_passphrase_for_test(passphrase: &str, plaintext: &[u8]) -> Vec<u8> {
+        let mut recipient =
+            age::scrypt::Recipient::new(AgeSecretString::from(passphrase.to_string()));
+        recipient.set_work_factor(TEST_SCRYPT_LOG_N);
+        let encryptor =
+            Encryptor::with_recipients(std::iter::once(&recipient as &dyn Recipient)).unwrap();
+        let mut encrypted = Vec::new();
+        let mut writer = encryptor.wrap_output(&mut encrypted).unwrap();
+        writer.write_all(plaintext).unwrap();
+        writer.finish().unwrap();
+        encrypted
+    }
+
+    fn write_passphrase_ciphertext_for_test(
+        passphrase: &str,
+        output: &std::path::Path,
+        plaintext: &[u8],
+    ) {
+        fs::write(
+            output,
+            encrypt_bytes_with_passphrase_for_test(passphrase, plaintext),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn encrypt_decrypt_round_trip_with_identity() {
         let dir = std::env::temp_dir().join(format!("nvlt-age-{}", std::process::id()));
@@ -411,7 +439,7 @@ mod tests {
         fs::write(&plain_path, b"payload").unwrap();
 
         age_encrypt(&[public], None, false, Some(&rec_path), Some(&plain_path)).unwrap();
-        encrypt_with_passphrase("correct horse", &pass_path, &plain_path).unwrap();
+        write_passphrase_ciphertext_for_test("correct horse", &pass_path, b"payload");
 
         assert!(!is_scrypt_ciphertext(&fs::read(&rec_path).unwrap()).unwrap());
         assert!(is_scrypt_ciphertext(&fs::read(&pass_path).unwrap()).unwrap());
@@ -428,9 +456,7 @@ mod tests {
 
         let plain_path = dir.join("plain.txt");
         let ct_path = dir.join("ct.age");
-        fs::write(&plain_path, b"secret payload").unwrap();
-
-        encrypt_with_passphrase("correct horse", &ct_path, &plain_path).unwrap();
+        write_passphrase_ciphertext_for_test("correct horse", &ct_path, b"secret payload");
         let ciphertext = fs::read(&ct_path).unwrap();
 
         let identity =
@@ -441,31 +467,6 @@ mod tests {
         let wrong = age::scrypt::Identity::new(AgeSecretString::from("wrong".to_string()));
         let refs: Vec<&dyn Identity> = vec![&wrong as &dyn Identity];
         assert!(decrypt_with(&ciphertext, &refs).is_err());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn decrypt_scrypt_passphrase() {
-        let dir = std::env::temp_dir().join(format!("nvlt-scrypt-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-
-        let encryptor =
-            Encryptor::with_user_passphrase(AgeSecretString::from("correct horse".to_string()));
-        let mut ct = Vec::new();
-        let mut writer = encryptor.wrap_output(&mut ct).unwrap();
-        writer.write_all(b"hidden").unwrap();
-        writer.finish().unwrap();
-
-        let identity =
-            age::scrypt::Identity::new(AgeSecretString::from("correct horse".to_string()));
-        let refs: Vec<&dyn Identity> = vec![&identity as &dyn Identity];
-        assert_eq!(decrypt_with(&ct, &refs).unwrap(), b"hidden");
-
-        let wrong = age::scrypt::Identity::new(AgeSecretString::from("wrong".to_string()));
-        let refs: Vec<&dyn Identity> = vec![&wrong as &dyn Identity];
-        assert!(decrypt_with(&ct, &refs).is_err());
 
         let _ = fs::remove_dir_all(&dir);
     }
