@@ -5,7 +5,7 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "nvlt";
-  version = "0.1.5";
+  version = "0.1.51";
 
   src = lib.cleanSource ./.;
 
